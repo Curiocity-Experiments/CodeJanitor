@@ -1,0 +1,23 @@
+# config.yml
+ignore_dirs:
+  - vendor
+  - .git
+  - .bundle
+  - tmp
+  - log
+  - public
+  - tas/db/seeds
+extensions:
+  - .rb
+  - .rake
+  - .erb
+  - .haml
+  - .slim
+size_threshold: 1048576
+exclude_self: true
+archive_folder: Matz_Museum
+use_parallel: true
+max_threads: 4
+main_files:
+  - main.rb
+  - application.rb
