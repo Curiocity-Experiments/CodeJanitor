@@ -92,7 +92,9 @@ class RubyRubble
     current_script = File.expand_path(__FILE__)
 
     files = Dir.glob(File.join(app_directory, '**', '*'))
-    progress_bar = ProgressBar.create(total: files.size, format: '%a %b\u{15E7}%i %p%% %t')
+
+    spinner = ['|', '/', '-', '\\']
+    progress_count = 0
 
     files.each do |file_path|
       next if File.directory?(file_path)
@@ -102,7 +104,9 @@ class RubyRubble
 
       file_info = get_file_info(file_path)
       all_files[file_path] = file_info
-      progress_bar.increment  # Increment progress bar here
+      # Update and display the spinner
+      progress_count += 1
+      print "\rProcessing files: #{spinner[progress_count % 4]} #{progress_count}/#{files.size}"
 
       large_files.add(file_path) if file_info[:size] > config['size_threshold']
 
@@ -123,10 +127,11 @@ class RubyRubble
       end
     end
 
+    puts "\nFile processing complete!"
+
     unused_files = all_files.keys.to_set - used_files
     [unused_files, problematic_requires, large_files, all_files]
   end
-
 
   def parse_gitignore(directory)
     gitignore_path = File.join(directory, '.gitignore')
@@ -135,12 +140,8 @@ class RubyRubble
     File.readlines(gitignore_path).map(&:strip).reject { |line| line.empty? || line.start_with?('#') }
   end
 
-  private
-
   def should_ignore?(file_path, ignore_patterns)
     rel_path = relative_path(file_path, app_directory)
-    puts "Debug: file_path = #{file_path}, rel_path = #{rel_path}"
-    puts "Debug: ignore_patterns = #{ignore_patterns.inspect}"
 
     return false if File.basename(file_path) == 'app.rb'
     return true if config['ignore_dirs'].any? { |ignore| rel_path.start_with?(ignore) }
@@ -149,7 +150,6 @@ class RubyRubble
       # Adjust the pattern to match directories correctly
       adjusted_pattern = pattern.end_with?('/') ? "#{pattern}**" : pattern
       match = File.fnmatch?(adjusted_pattern, rel_path)
-      puts "Debug: pattern = #{pattern}, adjusted_pattern = #{adjusted_pattern}, match = #{match}"
       return true if match
     end
 
@@ -161,7 +161,6 @@ class RubyRubble
     start = File.expand_path(start)
     Pathname.new(path).relative_path_from(Pathname.new(start)).to_s
   end
-
 
   def get_required_files(file_path)
     content = File.read(file_path)
@@ -206,24 +205,39 @@ class RubyRubble
   end
 
   def display_results(unused, problematic, large, all_files)
-    if unused.any?
-      unused_rows = unused.map do |file|
-        [
-          relative_path(file, app_directory),
-          format_size(all_files[file][:size]),
-          format_date(all_files[file][:created]),
-          format_date(all_files[file][:modified])
+  if unused.any?
+    grouped_unused = unused.group_by { |file| File.dirname(file) }
+    unused_rows = []
+
+    grouped_unused.each do |folder, files|
+      if files.length > 10
+        unused_rows << [
+          "#{folder} (#{files.length} files)",
+          format_size(files.sum { |f| all_files[f][:size] }),
+          "-",
+          "-"
         ]
+      else
+        files.each do |file|
+          unused_rows << [
+            relative_path(file, app_directory),
+            format_size(all_files[file][:size]),
+            format_date(all_files[file][:created]),
+            format_date(all_files[file][:modified])
+          ]
+        end
       end
-      print_table(
-        "🕵️ The Gem Graveyard (aka Unused Files) 🕵️",
-        ["File", "Size", "Created", "Last Modified"],
-        unused_rows,
-        [40, 10, 25, 25]
-      )
-    else
-      puts "No unused files found. Your codebase is cleaner than a freshly polished Ruby! ✨"
     end
+
+    print_table(
+      "🕵️ The Gem Graveyard (aka Unused Files) 🕵️",
+      ["File/Folder", "Size", "Created", "Last Modified"],
+      unused_rows,
+      [40, 10, 25, 25]
+    )
+  else
+    puts "No unused files found. Your codebase is cleaner than a freshly polished Ruby! ✨"
+  end
 
     if problematic.any?
       problematic_rows = problematic.to_a
@@ -302,7 +316,15 @@ class RubyRubble
   end
 
   def interactive_select(options, previous_output)
-    selected = Array.new(options.length, false)
+    grouped_options = options.group_by { |path| File.dirname(path) }
+    flattened_options = grouped_options.flat_map do |dir, files|
+      if files.length > 5
+        ["#{dir} (#{files.length} files)"]
+      else
+        files
+      end
+    end
+    selected = Array.new(flattened_options.length, false)
     current = 0
 
     loop do
@@ -315,7 +337,7 @@ class RubyRubble
       puts "Use ↑ and ↓ to move, SPACE to select/deselect, 'a' to select all, 'n' to deselect all"
       puts "'q' to quit, 'd' to delete selected, 'm' to move selected to archive"
       puts "=" * 50
-      options.each_with_index do |option, index|
+      flattened_options.each_with_index do |option, index|
         prefix = index == current ? '> ' : '  '
         checkbox = selected[index] ? '[x]' : '[ ]'
         puts "#{prefix}#{checkbox} #{option}"
@@ -327,17 +349,33 @@ class RubyRubble
       when "\e"
         next_two = get_char + get_char
         case next_two
-        when '[A' then current = (current - 1) % options.length  # Up arrow
-        when '[B' then current = (current + 1) % options.length  # Down arrow
+        when '[A' then current = (current - 1) % flattened_options.length  # Up arrow
+        when '[B' then current = (current + 1) % flattened_options.length  # Down arrow
         end
       when ' ' then selected[current] = !selected[current]  # Space bar
       when 'a' then selected.fill(true)
       when 'n' then selected.fill(false)
       when 'q' then return nil
-      when 'd' then return [options.select.with_index { |_, i| selected[i] }, 'delete']
-      when 'm' then return [options.select.with_index { |_, i| selected[i] }, 'archive']
+      when 'd' then return [expand_selected_files(flattened_options, selected, grouped_options), 'delete']
+      when 'm' then return [expand_selected_files(flattened_options, selected, grouped_options), 'archive']
       end
     end
+
+    def expand_selected_files(flattened_options, selected, grouped_options)
+      flattened_options.zip(selected).flat_map do |option, is_selected|
+        if is_selected
+          if option.end_with?('files)')
+            dir = option.split(' (').first
+            grouped_options[dir]
+          else
+            [option]
+          end
+        else
+          []
+        end
+      end
+    end
+
   end
 
   def get_char
