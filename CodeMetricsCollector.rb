@@ -145,18 +145,37 @@ class CodeMetricsCollector
       analyze_commit_frequencies
       collect_dependencies
       collect_code_churn
-
-      generate_reports
     end
 
     # Ensure the input thread is terminated
     @input_thread.kill if @input_thread&.alive?
 
-    # Log total execution time and files analyzed
+    # Assign execution metrics after the Benchmark block
     @total_execution_time = total_time
     @files_per_second = (@analyzed_files / total_time).round(2) if total_time.positive?
     @average_time_per_file = (total_time / @analyzed_files).round(2) if @analyzed_files.positive?
     @peak_memory = get_peak_memory_usage
+
+    # Add a debug statement to inspect @metrics
+    @logger.debug("Metrics collected: #{@metrics}") if @logger.level <= Logger::DEBUG
+
+    # Check if any files were analyzed
+    if @metrics.empty?
+      @logger.debug("No files were analyzed. Possible reasons:")
+      @logger.debug("- All files were skipped due to `min_loc` threshold.")
+      @logger.debug("- No Ruby files found in the specified directory.")
+      @logger.debug("- Errors occurred during file processing.")
+      puts "\nNo files were analyzed. Please check the following:".colorize(COLOR_SCHEME[:warning])
+      puts "- Ensure the directory path is correct."
+      puts "- Verify that files meet the minimum LOC requirement (`min_loc` is set appropriately)."
+      puts "- Review exclusion patterns or ignored files."
+      return @metrics
+    end
+
+
+
+    # Generate reports after metrics are set
+    generate_reports
 
     @metrics
   end
@@ -560,40 +579,44 @@ class CodeMetricsCollector
       -average_cyclomatic_complexity_for_file(data)
     end.first(10)
 
-    rows = top_files.map do |file, data|
-      [
-        truncate(file, 80),
-        data[:loc],
-        data[:classes],
-        data[:methods].size,
-        average_cyclomatic_complexity_for_file(data),
-        data[:maintainability_index],
-        @code_churn[file] || 0,
-        data[:issues].size
-      ]
-    end
+    if top_files.empty?
+      puts "\nNo files were analyzed to display in the Top 10 Files by Cyclomatic Complexity.".colorize(COLOR_SCHEME[:warning])
+    else
+      rows = top_files.map do |file, data|
+        [
+          truncate(file, 80),
+          data[:loc],
+          data[:classes],
+          data[:methods].size,
+          average_cyclomatic_complexity_for_file(data),
+          data[:maintainability_index],
+          @code_churn[file] || 0,
+          data[:issues].size
+        ]
+      end
 
-    table = TTY::Table.new(
-      header: [
-        'File'.colorize(COLOR_SCHEME[:heading]),
-        'LOC'.colorize(COLOR_SCHEME[:heading]),
-        'Cls'.colorize(COLOR_SCHEME[:heading]),
-        'Mth'.colorize(COLOR_SCHEME[:heading]),
-        'Avg Cmplx'.colorize(COLOR_SCHEME[:heading]),
-        'MI'.colorize(COLOR_SCHEME[:heading]),
-        'Churn'.colorize(COLOR_SCHEME[:heading]),
-        'Issues'.colorize(COLOR_SCHEME[:heading])
-      ],
-      rows: rows
-    )
+      table = TTY::Table.new(
+        header: [
+          'File'.colorize(COLOR_SCHEME[:heading]),
+          'LOC'.colorize(COLOR_SCHEME[:heading]),
+          'Cls'.colorize(COLOR_SCHEME[:heading]),
+          'Mth'.colorize(COLOR_SCHEME[:heading]),
+          'Avg Cmplx'.colorize(COLOR_SCHEME[:heading]),
+          'MI'.colorize(COLOR_SCHEME[:heading]),
+          'Churn'.colorize(COLOR_SCHEME[:heading]),
+          'Issues'.colorize(COLOR_SCHEME[:heading])
+        ],
+        rows: rows
+      )
 
-    puts "\nTop 10 Files by Cyclomatic Complexity:".colorize(COLOR_SCHEME[:title])
-    puts "(High complexity methods can be difficult to maintain. Consider refactoring these methods to simplify them.)".colorize(COLOR_SCHEME[:warning])
+      puts "\nTop 10 Files by Cyclomatic Complexity:".colorize(COLOR_SCHEME[:title])
+      puts "(High complexity methods can be difficult to maintain. Consider refactoring these methods to simplify them.)".colorize(COLOR_SCHEME[:warning])
 
-    # Render the table
-    puts table.render(:unicode) do |renderer|
-      renderer.alignments = [:left, :center, :center, :center, :center, :center, :center, :center]
-      renderer.width = @options[:max_output_width]
+      # Render the table
+      puts table.render(:unicode) do |renderer|
+        renderer.alignments = [:left, :center, :center, :center, :center, :center, :center, :center]
+        renderer.width = @options[:max_output_width]
+      end
     end
 
     # Collect all issues across all files
@@ -615,8 +638,6 @@ class CodeMetricsCollector
 
     # Present top 5 issues in a single table
     if top_issues.any?
-      puts "\nTop 5 Issues with Full Details:".colorize(COLOR_SCHEME[:title])
-
       rows = top_issues.map do |issue|
         [
           truncate(issue[:file], 50),
@@ -638,6 +659,8 @@ class CodeMetricsCollector
         rows: rows
       )
 
+      puts "\nTop 5 Issues with Full Details:".colorize(COLOR_SCHEME[:title])
+
       puts table.render(:unicode) do |renderer|
         renderer.alignments = [:left, :left, :center, :center, :center]
         renderer.width = @options[:max_output_width]
@@ -658,65 +681,88 @@ class CodeMetricsCollector
     duplication_chart = code_duplication_distribution_chart
 
     # Output charts with headings and explanations
-    puts "\nLOC Distribution per File:".colorize(COLOR_SCHEME[:title])
-    puts "This chart shows the distribution of lines of code across files. Large files may need refactoring.".colorize(COLOR_SCHEME[:info])
-    puts loc_chart
+    if @line_counts.any?
+      puts "\nLOC Distribution per File:".colorize(COLOR_SCHEME[:title])
+      puts "This chart shows the distribution of lines of code across files. Large files may need refactoring.".colorize(COLOR_SCHEME[:info])
+      puts loc_chart
+    else
+      puts "\nNo data available for LOC Distribution chart.".colorize(COLOR_SCHEME[:warning])
+    end
 
-    puts "\nCyclomatic Complexity Distribution:".colorize(COLOR_SCHEME[:title])
-    puts "This chart displays the complexity of methods. High complexity may indicate methods that are difficult to maintain.".colorize(COLOR_SCHEME[:info])
-    puts complexity_chart
+    if @complexity_counts.any?
+      puts "\nCyclomatic Complexity Distribution:".colorize(COLOR_SCHEME[:title])
+      puts "This chart displays the complexity of methods. High complexity may indicate methods that are difficult to maintain.".colorize(COLOR_SCHEME[:info])
+      puts complexity_chart
+    else
+      puts "\nNo data available for Cyclomatic Complexity Distribution chart.".colorize(COLOR_SCHEME[:warning])
+    end
 
-    puts "\nComment Density Across Files (%):".colorize(COLOR_SCHEME[:title])
-    puts "A low comment density might suggest insufficient documentation.".colorize(COLOR_SCHEME[:info])
-    puts comment_chart
+    if @comment_ratios.any?
+      puts "\nComment Density Across Files (%):".colorize(COLOR_SCHEME[:title])
+      puts "A low comment density might suggest insufficient documentation.".colorize(COLOR_SCHEME[:info])
+      puts comment_chart
+    else
+      puts "\nNo data available for Comment Density chart.".colorize(COLOR_SCHEME[:warning])
+    end
 
-    puts "\nCode Duplication in Files (%):".colorize(COLOR_SCHEME[:title])
-    puts "This chart shows the percentage of duplicated lines in files. High duplication suggests code that could be refactored to improve maintainability.".colorize(COLOR_SCHEME[:info])
-    puts "Duplication is calculated by comparing the number of unique lines to the total number of lines in a file.".colorize(COLOR_SCHEME[:info])
-    puts duplication_chart
+    if @duplication_ratios.any?
+      puts "\nCode Duplication in Files (%):".colorize(COLOR_SCHEME[:title])
+      puts "This chart shows the percentage of duplicated lines in files. High duplication suggests code that could be refactored to improve maintainability.".colorize(COLOR_SCHEME[:info])
+      puts "Duplication is calculated by comparing the number of unique lines to the total number of lines in a file.".colorize(COLOR_SCHEME[:info])
+      puts duplication_chart
+    else
+      puts "\nNo data available for Code Duplication chart.".colorize(COLOR_SCHEME[:warning])
+    end
 
+    # Commit Frequency Metrics
     puts "\nCommit Frequency Metrics:".colorize(COLOR_SCHEME[:title])
     puts "This table shows the number of commits over different periods. It helps identify active development phases and potentially neglected code.".colorize(COLOR_SCHEME[:info])
     puts "Consider reviewing areas with low recent activity for possible updates or deprecation.".colorize(COLOR_SCHEME[:info])
     puts output_commit_frequencies
 
-    puts "\nDependency Analysis:".colorize(COLOR_SCHEME[:title])
-    puts "This table lists the dependencies used in your project and how many times they are required.".colorize(COLOR_SCHEME[:info])
-    puts "High usage dependencies are critical to your project. Ensure they are up-to-date and secure.".colorize(COLOR_SCHEME[:info])
-    puts output_dependency_analysis
+    # Dependency Analysis
+    if @dependencies.any?
+      puts "\nDependency Analysis:".colorize(COLOR_SCHEME[:title])
+      puts "This table lists the dependencies used in your project and how many times they are required.".colorize(COLOR_SCHEME[:info])
+      puts "High usage dependencies are critical to your project. Ensure they are up-to-date and secure.".colorize(COLOR_SCHEME[:info])
+      puts output_dependency_analysis
+    else
+      puts "\nNo dependencies found or unable to parse requires.".colorize(COLOR_SCHEME[:warning])
+    end
 
     # Report files with long processing times
-    report_slow_files
+    # report_slow_files
 
     # Final Summary Section
     puts "\n" + '=' * @options[:max_output_width]
     puts "Analysis Complete".center(@options[:max_output_width]).colorize(COLOR_SCHEME[:success])
     puts '=' * @options[:max_output_width]
 
-    # Key Insights
+    # Key Insights Table
     puts "\nKey Insights:".colorize(COLOR_SCHEME[:heading])
 
-    # Ensure values are numeric
-    total_execution_time = @total_execution_time || 0.0
-    peak_memory_usage = @peak_memory || 0.0
-    files_per_second = @files_per_second || 0.0
-    average_time_per_file = @average_time_per_file || 0.0
+    insights_table = TTY::Table.new(
+      header: [
+        'Metric'.colorize(COLOR_SCHEME[:heading]),
+        'Value'.colorize(COLOR_SCHEME[:heading])
+      ],
+      rows: [
+        ['Total Lines of Code (LOC)', @metrics.values.sum { |data| data[:loc] || 0 }],
+        ['Total Classes', @metrics.values.sum { |data| data[:classes] || 0 }],
+        ['Total Methods', @metrics.values.sum { |data| data[:methods].size || 0 }],
+        ['Average Cyclomatic Complexity', average_cyclomatic_complexity],
+        ['Files with High Complexity', high_complexity_files.count],
+        ['Most Complex File', most_complex_file],
+        ['Peak Memory Usage', "#{format('%.2f', @peak_memory)} MB"],
+        ['Total Execution Time', "#{format('%.2f', @total_execution_time)} seconds"],
+        ['Processing Speed', "#{format('%.2f', @files_per_second)} files/second"],
+        ['Average Time per File', @average_time_per_file ? "#{format('%.2f', @average_time_per_file * 1000)} ms" : 'N/A'] # Converted to milliseconds
+      ]
+    )
 
-    insights = [
-      "Total Lines of Code (LOC): #{@metrics.values.sum { |data| data[:loc] || 0 }}",
-      "Total Classes: #{@metrics.values.sum { |data| data[:classes] || 0 }}",
-      "Total Methods: #{@metrics.values.sum { |data| data[:methods].size || 0 }}",
-      "Average Cyclomatic Complexity: #{average_cyclomatic_complexity}",
-      "Files with High Complexity: #{high_complexity_files.count}",
-      "Most Complex File: #{most_complex_file}",
-      "Peak Memory Usage: #{format('%.2f', peak_memory_usage)} MB",
-      "Total Execution Time: #{format('%.2f', total_execution_time)} seconds",
-      "Processing Speed: #{format('%.2f', files_per_second)} files/second",
-      "Average Time per File: #{format('%.2f', average_time_per_file)} seconds"
-    ]
-
-    insights.each do |insight|
-      puts "- #{insight}".colorize(COLOR_SCHEME[:text])
+    puts insights_table.render(:unicode) do |renderer|
+      renderer.alignments = [:left, :right]
+      renderer.width = @options[:max_output_width]
     end
 
     puts '=' * @options[:max_output_width] + "\n"
@@ -818,12 +864,33 @@ class CodeMetricsCollector
   # Get peak memory usage of the process.
   def get_peak_memory_usage
     begin
-      proc_info = ProcTable.ps(Process.pid)
-      memory_usage_kb = proc_info.rss
-      @logger.debug("Retrieved memory usage - #{memory_usage_kb} KB") if @logger.level <= Logger::DEBUG
-      return (memory_usage_kb / 1024.0).round(2) if memory_usage_kb.positive?
+      # Retrieve the current process information
+      proc_info = ProcTable.ps.find { |p| p.pid == Process.pid }
 
-      @logger.warn('Unable to retrieve memory usage.'.colorize(COLOR_SCHEME[:warning])) if @logger.level <= Logger::WARN
+      if proc_info && proc_info.respond_to?(:rss)
+        memory_usage = proc_info.rss
+
+        # Determine the operating system
+        os = RbConfig::CONFIG['host_os']
+
+        memory_usage_mb = case os
+                          when /linux|unix/
+                            # On Linux and Unix-like systems, rss is in KB
+                            (memory_usage / 1024.0).round(2)
+                          when /darwin/
+                            # On macOS, rss is in bytes
+                            (memory_usage / (1024.0 * 1024.0)).round(2)
+                          else
+                            # Default assumption: rss is in KB
+                            (memory_usage / 1024.0).round(2)
+                          end
+
+        @logger.debug("Retrieved memory usage - #{memory_usage_mb} MB") if @logger.level <= Logger::DEBUG
+        return memory_usage_mb if memory_usage.positive?
+      else
+        @logger.warn('Unable to retrieve memory usage.'.colorize(COLOR_SCHEME[:warning])) if @logger.level <= Logger::WARN
+      end
+
       0.0
     rescue StandardError => e
       @logger.error("Error retrieving memory usage: #{e.message}".colorize(COLOR_SCHEME[:error]))
@@ -831,11 +898,12 @@ class CodeMetricsCollector
     end
   end
 
+
   # Create LOC distribution chart.
   def loc_distribution_chart
     return "No data available for LOC Distribution chart." if @line_counts.empty?
 
-    bucket_size = 100
+    bucket_size = 200
     histogram_data = Hash.new(0)
     @line_counts.each do |loc|
       bucket = ((loc.to_f / bucket_size).floor) * bucket_size
@@ -850,7 +918,7 @@ class CodeMetricsCollector
       title: "LOC Distribution",
       xlabel: "LOC Range",
       ylabel: "Number of Files",
-      width: @options[:max_output_width] - 10
+      width: [@options[:max_output_width] - 5, 50].min  # Adjusted width
     )
 
     output = StringIO.new
