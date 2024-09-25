@@ -1,22 +1,13 @@
 #!/usr/bin/env ruby
 
-# code_metrics_collector.rb
-
+# CodeMetricsCollector.rb
+#
 # This script analyzes Ruby code files and collects various metrics,
 # providing insights into code complexity and maintainability.
 # Output messages have the persona of a bored accountant.
 
 require 'stringio'
 require 'io/console'
-
-# Temporarily suppress warnings during require
-old_stderr = $stderr
-$stderr = StringIO.new
-
-require 'parser/current'
-
-$stderr = old_stderr
-
 require 'json'
 require 'digest'
 require 'thread'
@@ -24,122 +15,148 @@ require 'logger'
 require 'optparse'
 require 'set'
 require 'benchmark'
+require 'monitor'  # Added to use Monitor instead of Mutex
 
-# Install missing gems if necessary
-begin
-  require 'tty-table'
+# Constants for default values
+DEFAULT_THREAD_COUNT = 4
+DEFAULT_MIN_LOC = 10
+DEFAULT_MAX_OUTPUT_WIDTH = begin
   require 'tty-screen'
-  require 'tty-cursor'
-  require 'colorize'
-  require 'unicode_plot'
-  require 'terminal-table'
-rescue LoadError => e
-  # Extract the missing gem name from the error message
-  missing_gem = e.message.match(/-- (.+)$/)[1]
-  puts "Missing gem detected: #{missing_gem}"
-  puts "Installing required gem '#{missing_gem}'..."
-  system("gem install #{missing_gem}")
-  Gem.clear_paths
-  retry
+  TTY::Screen.width
+rescue LoadError
+  120
 end
+DEFAULT_OUTPUT_DIR = 'metrics_reports'
+DEFAULT_LOG_LEVEL = Logger::INFO
+DEFAULT_OUTPUT_FORMATS = [:json, :csv]
+DEFAULT_THRESHOLD_CYCLOMATIC_COMPLEXITY = 10
+DEFAULT_THRESHOLD_NESTING_DEPTH = 5
+DEFAULT_THRESHOLD_PARAMETERS = 4
+
+# Required Gems
+REQUIRED_GEMS = [
+  'parser/current',
+  'tty-table',
+  'tty-screen',
+  'tty-cursor',
+  'colorize',
+  'unicode_plot',
+  'tty-progressbar',
+  'sys/proctable'
+]
+
+# Check for required gems and prompt user to install if missing
+def check_required_gems
+  missing_gems = []
+  REQUIRED_GEMS.each do |gem_name|
+    begin
+      require gem_name
+    rescue LoadError
+      gem_base = gem_name.split('/').first
+      missing_gems << gem_base
+    end
+  end
+
+  unless missing_gems.empty?
+    puts "Error: Missing required gems: #{missing_gems.join(', ')}"
+    puts "Please install them by running: gem install #{missing_gems.join(' ')}"
+    exit 1
+  end
+end
+
+check_required_gems
+
+include Sys
 
 # CodeMetricsCollector analyzes Ruby code files and collects various metrics.
 class CodeMetricsCollector
   attr_reader :options
 
-  # Initialize with the directory to analyze and options.
+  COLOR_SCHEME = {
+    title: :white,
+    heading: :yellow,
+    text: :light_white,
+    warning: :light_yellow,
+    error: :red,
+    success: :green,
+    info: :cyan
+  }.freeze
+
   def initialize(directory, options = {})
     @directory = directory
     @options = default_options.merge(options)
     @metrics = {}
-    @logger = Logger.new(@options[:log_file] || STDOUT)
-    @logger.level = @options[:log_level]
-    @logger.formatter = proc do |_severity, _datetime, _progname, msg|
-      "#{msg}\n"
-    end
-    @mutex = Mutex.new
-    @line_counts = []           # For storing LOC per file
-    @complexity_counts = []     # For cyclomatic complexity distribution
-    @comment_ratios = []        # For comment density data
-    @duplication_ratios = []    # For code duplication data
-    @file_processing_times = {} # For per-file processing time
+    @logger = initialize_logger
+    @mutex = Monitor.new  # Changed from Mutex.new to Monitor.new
+    @line_counts = []
+    @complexity_counts = []
+    @comment_ratios = []
+    @duplication_ratios = []
+    @file_processing_times = {}
     @total_files = 0
     @analyzed_files = 0
-    @max_complexity = 0         # For tracking max cyclomatic complexity
-    @stop_requested = false     # For handling interrupt signal
+    @processed_files = 0
+    @max_complexity = 0
+    @stop_requested = false
+    @code_churn = {}
+    @dependencies = {}
+    @commit_data = []
+    @commit_frequencies = {}
   end
 
   # Collect metrics from all Ruby files in the directory.
   def collect_metrics
-    # Trap SIGINT (Ctrl+C)
-    Signal.trap("INT") do
-      @stop_requested = true
-      @logger.info("\nInterrupt received. Stopping analysis...".colorize(:red))
-    end
+    setup_signal_traps
+    start_input_listener
 
-    # Start input listener thread for Esc key
-    input_thread = Thread.new do
-      while !@stop_requested
-        begin
-          if IO.select([STDIN], nil, nil, 0.1)
-            char = STDIN.getch
-            if char == "\e" # Esc key
-              @stop_requested = true
-              @logger.info("\nEsc key pressed. Stopping analysis...".colorize(:red))
-              break
-            end
-          end
-        rescue Exception => e
-          @logger.error("Input thread error: #{e.message}")
-          break
-        end
-      end
-    end
+    @logger.info("Starting analysis of directory: #{@directory}".colorize(COLOR_SCHEME[:info]))
+    files = ruby_files
+    @logger.info("Total files found: #{files.count}".colorize(COLOR_SCHEME[:info]))
+
+    start_time = Time.now
 
     total_time = Benchmark.realtime do
-      files = ruby_files
       @total_files = files.size
 
       # Initialize display components
       cursor = TTY::Cursor
-      screen_width = TTY::Screen.width
+      screen_width = @options[:max_output_width]
 
       # Clear the screen and hide the cursor
       print cursor.clear_screen
       print cursor.hide
 
       # Print the commentary
-      puts "Starting analysis of #{@total_files} files. Let's get this over with.".colorize(:light_blue)
-      puts "Processing files... Try to stay awake.".colorize(:light_blue)
+      puts "Starting analysis of #{@total_files} files. Let's get this over with.".colorize(COLOR_SCHEME[:info])
+      puts "Processing files... Try to stay awake.".colorize(COLOR_SCHEME[:info])
 
       if @options[:incremental]
         files = filter_changed_files(files)
-        @logger.info("Incremental analysis enabled. #{files.size} files to analyze after filtering.".colorize(:light_blue))
+        @logger.info("Incremental analysis enabled. #{files.size} files to analyze after filtering.".colorize(COLOR_SCHEME[:info]))
       end
 
       # Move cursor to position below the commentary
       print cursor.move_to(0, 4)
 
-      process_files_in_parallel(files)
+      process_files_in_parallel(files, start_time, screen_width)
+
+      # Collect additional metrics after processing files
+      collect_commit_data
+      analyze_commit_frequencies
+      collect_dependencies
+      collect_code_churn
 
       generate_reports
-      @logger.info("Analysis complete. What a thrill.".colorize(:light_blue))
     end
 
     # Ensure the input thread is terminated
-    input_thread.kill if input_thread.alive?
+    @input_thread.kill if @input_thread&.alive?
 
     # Log total execution time and files analyzed
-    files_per_second = (@analyzed_files / total_time).round(2) rescue 0
-    average_time_per_file = (total_time / @analyzed_files).round(2) rescue 0
-    peak_memory = get_peak_memory_usage
-    @logger.info("Total execution time: #{format('%.2f', total_time)} seconds. Could've been worse.".colorize(:light_blue))
-    @logger.info("Peak memory usage: #{format('%.2f', peak_memory)} MB. Could be better.".colorize(:light_blue))
-    @logger.info("Processing speed: #{files_per_second} files/second.".colorize(:light_blue))
-    @logger.info("Average time per file: #{average_time_per_file} seconds.".colorize(:light_blue))
-    @logger.info("Total files analyzed: #{@analyzed_files} out of #{@total_files}. How exciting.".colorize(:light_blue))
-
-    report_slow_files
+    @total_execution_time = total_time
+    @files_per_second = (@analyzed_files / total_time).round(2) if total_time.positive?
+    @average_time_per_file = (total_time / @analyzed_files).round(2) if @analyzed_files.positive?
+    @peak_memory = get_peak_memory_usage
 
     @metrics
   end
@@ -150,34 +167,95 @@ class CodeMetricsCollector
   def default_options
     {
       metrics: %i[loc methods classes cyclomatic_complexity halstead maintainability nesting_depth parameters],
-      thresholds: {},
-      ignore_patterns: ['spec/**/*', 'test/**/*', 'vendor/**/*', 'node_modules/**/*', '.*'],  # Default ignore patterns
+      thresholds: {
+        cyclomatic_complexity: DEFAULT_THRESHOLD_CYCLOMATIC_COMPLEXITY,
+        nesting_depth: DEFAULT_THRESHOLD_NESTING_DEPTH,
+        parameters: DEFAULT_THRESHOLD_PARAMETERS
+      },
+      ignore_patterns: ['spec/**/*', 'test/**/*', 'vendor/**/*', 'node_modules/**/*'],
       exclude_paths: [],
-      thread_count: 4,
+      thread_count: DEFAULT_THREAD_COUNT,
       incremental: true,
-      output_format: %i[json csv],
-      output_dir: 'metrics_reports',
-      log_level: Logger::INFO,
+      follow_symlinks: false,
+      output_format: DEFAULT_OUTPUT_FORMATS,
+      output_dir: DEFAULT_OUTPUT_DIR,
+      log_level: DEFAULT_LOG_LEVEL,
       log_file: nil,
-      output_to_console: true,      # Option to output metrics to console
-      output_file: nil,             # Option to specify a file to save metrics
-      min_loc: 100,                 # Minimum lines of code to analyze a file
-      max_output_width: 160         # Maximum output width for terminal
+      output_to_console: true,
+      output_file: nil,
+      min_loc: DEFAULT_MIN_LOC,
+      max_output_width: DEFAULT_MAX_OUTPUT_WIDTH
     }
+  end
+
+  # Initialize the logger with specified log level and format.
+  def initialize_logger
+    logger = Logger.new(@options[:log_file] || STDERR)
+    logger.level = @options[:log_level]
+    logger.formatter = proc { |severity, _datetime, _progname, msg| "#{msg}\n" }
+    logger
+  end
+
+  # Encapsulate suppression of warnings to limit scope.
+  def with_warnings_suppressed
+    original_stderr = $stderr
+    $stderr = StringIO.new
+    yield
+  ensure
+    $stderr = original_stderr
+  end
+
+  # Set up signal traps for graceful termination.
+  def setup_signal_traps
+    Signal.trap("INT") do
+      @stop_requested = true
+      @logger.info("\nInterrupt received. Stopping analysis...".colorize(COLOR_SCHEME[:error]))
+    end
+  end
+
+  # Start a thread to listen for the Esc key to terminate analysis.
+  def start_input_listener
+    @input_thread = Thread.new do
+      while !@stop_requested
+        begin
+          if IO.select([STDIN], nil, nil, 0.1)
+            char = STDIN.getch
+            if char == "\e" # Esc key
+              @stop_requested = true
+              @logger.info("\nEsc key pressed. Stopping analysis...".colorize(COLOR_SCHEME[:error]))
+              break
+            end
+          end
+        rescue StandardError => e
+          @logger.error("Input thread error: #{e.class} - #{e.message}".colorize(COLOR_SCHEME[:error]))
+          break
+        end
+      end
+    end
   end
 
   # Get a list of all Ruby files in the directory, excluding ignored patterns and paths.
   def ruby_files
-    Dir.glob(File.join(@directory, '**', '*.rb')).reject do |file|
-      ignored_file?(file)
-    end
+    glob_pattern = File.join(@directory, '**', '*.rb')
+    glob_options = @options[:follow_symlinks] ? File::FNM_DOTMATCH : File::FNM_NOESCAPE
+
+    files = Dir.glob(glob_pattern, glob_options)
+    @logger.debug("Found #{files.count} Ruby files before filtering") if @logger.level <= Logger::DEBUG
+
+    files.reject { |file| ignored_file?(file) }
+  rescue Errno::EACCES => e
+    @logger.error("Permission denied: #{e.message}".colorize(COLOR_SCHEME[:error]))
+    []
   end
 
   # Check if a file should be ignored based on patterns and paths.
   def ignored_file?(file)
     relative_path = file.sub("#{@directory}/", '')
-    @options[:ignore_patterns].any? { |pattern| File.fnmatch(pattern, relative_path, File::FNM_PATHNAME | File::FNM_DOTMATCH) } ||
-      @options[:exclude_paths].any? { |path| relative_path.start_with?(path) }
+    @options[:ignore_patterns].any? do |pattern|
+      File.fnmatch(pattern, relative_path, File::FNM_PATHNAME | File::FNM_DOTMATCH)
+    end || @options[:exclude_paths].any? do |path|
+      relative_path.start_with?(path)
+    end
   end
 
   # Filter files to only include those changed since the last commit.
@@ -191,53 +269,699 @@ class CodeMetricsCollector
     Dir.chdir(@directory) do
       `git diff --name-only HEAD`.split("\n").map { |f| File.join(@directory, f) }
     end
-  rescue
-    @logger.warn('Git not available or not a git repository. Analyzing all files.')
+  rescue StandardError
+    @logger.warn('Git not available or not a git repository. Analyzing all files.'.colorize(COLOR_SCHEME[:warning]))
     ruby_files
   end
 
-  # Process files in parallel using a thread pool.
-  def process_files_in_parallel(files)
+  # Process files in parallel using a thread pool and update display.
+  def process_files_in_parallel(files, start_time, screen_width)
     queue = Queue.new
     files.each { |file| queue << file }
 
     thread_count = [@options[:thread_count], files.size].min
-
-    total_files = files.size
-    @processed_files = 0
-
-    # Start the worker threads
     threads = Array.new(thread_count) do
       Thread.new do
         until queue.empty? || @stop_requested
-          file = queue.pop(true) rescue nil
-          break if @stop_requested
-          if file
-            collect_file_metrics(file)
-            @mutex.synchronize do
-              @analyzed_files += 1
-              @processed_files += 1
-            end
-            update_display(total_files, @processed_files, file, Time.now)
+          file = nil
+          @mutex.synchronize { file = queue.pop(true) rescue nil }
+          break if @stop_requested || file.nil?
+
+          @logger.debug("Processing file: #{file}") if @logger.level <= Logger::DEBUG
+          collect_file_metrics(file)
+          @mutex.synchronize do
+            @analyzed_files += 1
+            current_file = file
+            processed_files = @analyzed_files
+            # Move synchronization here to avoid recursive locking
+            update_display(@total_files, processed_files, current_file, start_time, screen_width)
           end
         end
       end
     end
 
     threads.each(&:join)
-
-    # Ensure the cursor is visible again
-    print TTY::Cursor.show
   end
 
-  def update_display(total_files, processed_files, current_file, start_time)
+  # Collect metrics from a single Ruby file.
+  def collect_file_metrics(file)
+    start_time = Time.now
+    content = File.read(file)
+    loc = content.lines.count
+
+    if loc < @options[:min_loc]
+      @logger.debug("Skipping #{file} due to low LOC (#{loc})") if @logger.level <= Logger::DEBUG
+      @mutex.synchronize { @line_counts << loc }
+      return
+    end
+
+    buffer = Parser::Source::Buffer.new(file)
+    buffer.source = content
+    parser = Parser::CurrentRuby.new
+
+    ast = nil
+    with_warnings_suppressed { ast = parser.parse(buffer) }
+
+    file_metrics = {
+      loc: loc,
+      methods: [],
+      classes: 0,
+      issues: [],
+      comments: count_comments(content)
+    }
+
+    if ast
+      visitor = MetricsVisitor.new(file_metrics, @options)
+      visitor.process(ast)
+    end
+
+    # Calculate file-level metrics
+    file_metrics[:maintainability_index] = calculate_file_maintainability_index(file_metrics)
+    file_metrics[:comment_density] = calculate_comment_density(file_metrics)
+    file_metrics[:duplication] = calculate_code_duplication(content)
+
+    @mutex.synchronize do
+      @metrics[file] = file_metrics
+      @line_counts << loc
+      @comment_ratios << file_metrics[:comment_density] if file_metrics[:comment_density]
+      @duplication_ratios << file_metrics[:duplication] if file_metrics[:duplication]
+      if file_metrics[:methods]
+        file_metrics[:methods].each do |method|
+          @complexity_counts << method[:cyclomatic_complexity]
+        end
+      end
+
+      # Update max complexity
+      if file_metrics[:methods]
+        file_max_complexity = file_metrics[:methods].map { |m| m[:cyclomatic_complexity] }.max || 0
+        if file_max_complexity > @max_complexity
+          @max_complexity = file_max_complexity
+          @max_complexity_file = file
+          @logger.info("New max cyclomatic complexity: #{@max_complexity} in #{file}".colorize(COLOR_SCHEME[:warning]))
+        end
+      end
+
+      processing_time = Time.now - start_time
+      @file_processing_times[file] = processing_time
+    end
+  rescue Parser::SyntaxError => e
+    @logger.error("Syntax error in #{file}: #{e.message}".colorize(COLOR_SCHEME[:error]))
+    @mutex.synchronize do
+      @metrics[file] ||= {}
+      @metrics[file][:issues] ||= []
+      @metrics[file][:issues] << "Syntax error: #{e.message}"
+    end
+  rescue Errno::EACCES => e
+    @logger.error("Permission denied for #{file}: #{e.message}".colorize(COLOR_SCHEME[:error]))
+    @mutex.synchronize do
+      @metrics[file] ||= {}
+      @metrics[file][:issues] ||= []
+      @metrics[file][:issues] << "Permission error: #{e.message}"
+    end
+  rescue StandardError => e
+    @logger.error("Error processing file #{file}: #{e.message}".colorize(COLOR_SCHEME[:error]))
+    @logger.debug(e.backtrace.join("\n")) if @logger.level <= Logger::DEBUG
+    @mutex.synchronize do
+      @metrics[file] ||= {}
+      @metrics[file][:issues] ||= []
+      @metrics[file][:issues] << "Processing error: #{e.message}"
+    end
+  end
+
+  # Count comment lines in the content
+  def count_comments(content)
+    content.lines.count { |line| line.strip.start_with?('#') }
+  end
+
+  # Calculate comment density for a file
+  def calculate_comment_density(data)
+    comment_lines = data[:comments]
+    loc = data[:loc]
+    return 0 if loc.zero?
+
+    ((comment_lines.to_f / loc) * 100).round(2)
+  end
+
+  # Calculate code duplication percentage
+  def calculate_code_duplication(content)
+    lines = content.lines.map(&:strip).reject(&:empty?)
+    total_lines = lines.size
+    unique_lines = lines.uniq.size
+    duplicated_lines = total_lines - unique_lines
+    return 0 if total_lines.zero?
+
+    ((duplicated_lines.to_f / total_lines) * 100).round(2)
+  end
+
+  # Calculate maintainability index for the entire file.
+  def calculate_file_maintainability_index(data)
+    total_volume = data[:methods].sum { |m| m[:halstead][:volume] || 0 }
+    total_cyclomatic_complexity = data[:methods].sum { |m| m[:cyclomatic_complexity] || 0 }
+    loc = data[:loc] || 0
+
+    mi = 171 - 5.2 * Math.log(volume_nonzero(total_volume)) - 0.23 * total_cyclomatic_complexity - 16.2 * Math.log(loc_nonzero(loc))
+    mi = [[mi, 0].max, 100].min
+    mi.round(2)
+  end
+
+  # Handle zero values in logarithms.
+  def volume_nonzero(volume)
+    volume > 0 ? volume : 1
+  end
+
+  def loc_nonzero(loc)
+    loc > 0 ? loc : 1
+  end
+
+  # Collect commit data using Git
+  def collect_commit_data
+    Dir.chdir(@directory) do
+      @commit_data = `git log --pretty=format:'%H,%ct'`.split("\n").map do |line|
+        hash, timestamp = line.split(',')
+        { hash: hash, date: Time.at(timestamp.to_i) }
+      end
+    end
+  rescue StandardError
+    @logger.warn('Git not available or not a git repository. Skipping commit frequency metrics.'.colorize(COLOR_SCHEME[:warning]))
+    @commit_data = []
+  end
+
+  # Analyze commit frequencies and populate @commit_frequencies
+  def analyze_commit_frequencies
+    return if @commit_data.empty?
+
+    current_time = Time.now
+    current_year = current_time.year
+    current_month = current_time.month
+    thirty_days_ago = current_time - (30 * 24 * 60 * 60)
+
+    @commit_frequencies = {
+      prior_years: 0,
+      prior_months: 0,
+      last_30_days: 0
+    }
+
+    @commit_data.each do |commit|
+      date = commit[:date]
+      if date.year < current_year
+        @commit_frequencies[:prior_years] += 1
+      elsif date.year == current_year && date.month < current_month
+        @commit_frequencies[:prior_months] += 1
+      elsif date >= thirty_days_ago
+        @commit_frequencies[:last_30_days] += 1
+      end
+    end
+
+    @logger.debug("Commit frequencies - #{@commit_frequencies}") if @logger.level <= Logger::DEBUG
+  end
+
+  # Collect dependencies from all files
+  def collect_dependencies
+    @dependencies = Hash.new { |hash, key| hash[key] = Set.new }
+
+    @metrics.each do |file, _data|
+      begin
+        content = File.read(file)
+        requires = content.scan(/require ['"]([^'"]+)['"]/).flatten
+        requires.each { |req| @dependencies[req] << file }
+      rescue StandardError => e
+        @logger.error("Error reading file #{file} for dependency analysis: #{e.message}".colorize(COLOR_SCHEME[:error]))
+      end
+    end
+  end
+
+  # Collect code churn metrics using Git
+  def collect_code_churn
+    Dir.chdir(@directory) do
+      @metrics.each_key do |file|
+        relative_file = file.sub("#{@directory}/", '')
+        commit_count = `git rev-list --count HEAD -- "#{relative_file}"`.to_i
+        @code_churn[file] = commit_count
+      end
+    end
+  rescue StandardError
+    @logger.warn('Git not available or not a git repository. Skipping code churn metrics.'.colorize(COLOR_SCHEME[:warning]))
+  end
+
+  # Generate reports in specified formats.
+  def generate_reports
+    if @options[:output_file]
+      Dir.mkdir(@options[:output_dir]) unless Dir.exist?(@options[:output_dir])
+
+      if @options[:output_format].include?(:json)
+        json_report_path = File.join(@options[:output_dir], "#{@options[:output_file]}.json")
+        File.write(json_report_path, JSON.pretty_generate(@metrics))
+        @logger.info("JSON report generated at #{json_report_path}".colorize(COLOR_SCHEME[:success]))
+      end
+
+      if @options[:output_format].include?(:csv)
+        csv_report_path = File.join(@options[:output_dir], "#{@options[:output_file]}.csv")
+        generate_csv_report(csv_report_path)
+        @logger.info("CSV report generated at #{csv_report_path}".colorize(COLOR_SCHEME[:success]))
+      end
+    else
+      @logger.info("No output file specified. Skipping report generation.".colorize(COLOR_SCHEME[:info]))
+    end
+
+    if @options[:output_to_console]
+      output_metrics_to_console
+    end
+  end
+
+  # Generate a CSV report.
+  def generate_csv_report(file_path)
+    require 'csv'
+    CSV.open(file_path, 'w') do |csv|
+      headers = %w[File LOC Classes Methods AvgCyclomaticComplexity MaintainabilityIndex CommentDensity Duplication Issues]
+      csv << headers
+
+      @metrics.each do |file, data|
+        csv << [
+          file,
+          data[:loc],
+          data[:classes],
+          data[:methods].size,
+          average_cyclomatic_complexity_for_file(data),
+          data[:maintainability_index],
+          data[:comment_density],
+          data[:duplication],
+          data[:issues].join('; ')
+        ]
+      end
+    end
+  end
+
+  # Output metrics to the console in a condensed, tabular format.
+  def output_metrics_to_console
+    require 'tty-table'
+
+    # Limit output to top 10 files with highest cyclomatic complexity
+    top_files = @metrics.sort_by do |_file, data|
+      -average_cyclomatic_complexity_for_file(data)
+    end.first(10)
+
+    rows = top_files.map do |file, data|
+      [
+        truncate(file, 80),
+        data[:loc],
+        data[:classes],
+        data[:methods].size,
+        average_cyclomatic_complexity_for_file(data),
+        data[:maintainability_index],
+        @code_churn[file] || 0,
+        data[:issues].size
+      ]
+    end
+
+    table = TTY::Table.new(
+      header: [
+        'File'.colorize(COLOR_SCHEME[:heading]),
+        'LOC'.colorize(COLOR_SCHEME[:heading]),
+        'Cls'.colorize(COLOR_SCHEME[:heading]),
+        'Mth'.colorize(COLOR_SCHEME[:heading]),
+        'Avg Cmplx'.colorize(COLOR_SCHEME[:heading]),
+        'MI'.colorize(COLOR_SCHEME[:heading]),
+        'Churn'.colorize(COLOR_SCHEME[:heading]),
+        'Issues'.colorize(COLOR_SCHEME[:heading])
+      ],
+      rows: rows
+    )
+
+    puts "\nTop 10 Files by Cyclomatic Complexity:".colorize(COLOR_SCHEME[:title])
+    puts "(High complexity methods can be difficult to maintain. Consider refactoring these methods to simplify them.)".colorize(COLOR_SCHEME[:warning])
+
+    # Render the table
+    puts table.render(:unicode) do |renderer|
+      renderer.alignments = [:left, :center, :center, :center, :center, :center, :center, :center]
+      renderer.width = @options[:max_output_width]
+    end
+
+    # Collect all issues across all files
+    all_issues = []
+    @metrics.each do |file, data|
+      data[:issues].each do |issue|
+        all_issues << {
+          file: file,
+          issue: issue,
+          complexity: average_cyclomatic_complexity_for_file(data),
+          maintainability_index: data[:maintainability_index],
+          loc: data[:loc]
+        }
+      end
+    end
+
+    # Sort issues by cyclomatic complexity (descending)
+    top_issues = all_issues.sort_by { |issue| -issue[:complexity] }.first(5)
+
+    # Present top 5 issues in a single table
+    if top_issues.any?
+      puts "\nTop 5 Issues with Full Details:".colorize(COLOR_SCHEME[:title])
+
+      rows = top_issues.map do |issue|
+        [
+          truncate(issue[:file], 50),
+          truncate(issue[:issue], 60),
+          issue[:complexity],
+          issue[:maintainability_index],
+          issue[:loc]
+        ]
+      end
+
+      table = TTY::Table.new(
+        header: [
+          'File'.colorize(COLOR_SCHEME[:heading]),
+          'Issue'.colorize(COLOR_SCHEME[:heading]),
+          'Complexity'.colorize(COLOR_SCHEME[:heading]),
+          'MI'.colorize(COLOR_SCHEME[:heading]),
+          'LOC'.colorize(COLOR_SCHEME[:heading])
+        ],
+        rows: rows
+      )
+
+      puts table.render(:unicode) do |renderer|
+        renderer.alignments = [:left, :left, :center, :center, :center]
+        renderer.width = @options[:max_output_width]
+      end
+    else
+      puts "\nNo issues detected.".colorize(COLOR_SCHEME[:success])
+    end
+
+    # Output charts
+    puts "\n" + '=' * @options[:max_output_width]
+    puts "Charts".center(@options[:max_output_width]).colorize(COLOR_SCHEME[:title])
+    puts '=' * @options[:max_output_width]
+
+    # Generate chart strings
+    loc_chart = loc_distribution_chart
+    complexity_chart = cyclomatic_complexity_distribution_chart
+    comment_chart = comment_density_distribution_chart
+    duplication_chart = code_duplication_distribution_chart
+
+    # Output charts with headings and explanations
+    puts "\nLOC Distribution per File:".colorize(COLOR_SCHEME[:title])
+    puts "This chart shows the distribution of lines of code across files. Large files may need refactoring.".colorize(COLOR_SCHEME[:info])
+    puts loc_chart
+
+    puts "\nCyclomatic Complexity Distribution:".colorize(COLOR_SCHEME[:title])
+    puts "This chart displays the complexity of methods. High complexity may indicate methods that are difficult to maintain.".colorize(COLOR_SCHEME[:info])
+    puts complexity_chart
+
+    puts "\nComment Density Across Files (%):".colorize(COLOR_SCHEME[:title])
+    puts "A low comment density might suggest insufficient documentation.".colorize(COLOR_SCHEME[:info])
+    puts comment_chart
+
+    puts "\nCode Duplication in Files (%):".colorize(COLOR_SCHEME[:title])
+    puts "This chart shows the percentage of duplicated lines in files. High duplication suggests code that could be refactored to improve maintainability.".colorize(COLOR_SCHEME[:info])
+    puts "Duplication is calculated by comparing the number of unique lines to the total number of lines in a file.".colorize(COLOR_SCHEME[:info])
+    puts duplication_chart
+
+    puts "\nCommit Frequency Metrics:".colorize(COLOR_SCHEME[:title])
+    puts "This table shows the number of commits over different periods. It helps identify active development phases and potentially neglected code.".colorize(COLOR_SCHEME[:info])
+    puts "Consider reviewing areas with low recent activity for possible updates or deprecation.".colorize(COLOR_SCHEME[:info])
+    puts output_commit_frequencies
+
+    puts "\nDependency Analysis:".colorize(COLOR_SCHEME[:title])
+    puts "This table lists the dependencies used in your project and how many times they are required.".colorize(COLOR_SCHEME[:info])
+    puts "High usage dependencies are critical to your project. Ensure they are up-to-date and secure.".colorize(COLOR_SCHEME[:info])
+    puts output_dependency_analysis
+
+    # Report files with long processing times
+    report_slow_files
+
+    # Final Summary Section
+    puts "\n" + '=' * @options[:max_output_width]
+    puts "Analysis Complete".center(@options[:max_output_width]).colorize(COLOR_SCHEME[:success])
+    puts '=' * @options[:max_output_width]
+
+    # Key Insights
+    puts "\nKey Insights:".colorize(COLOR_SCHEME[:heading])
+
+    # Ensure values are numeric
+    total_execution_time = @total_execution_time || 0.0
+    peak_memory_usage = @peak_memory || 0.0
+    files_per_second = @files_per_second || 0.0
+    average_time_per_file = @average_time_per_file || 0.0
+
+    insights = [
+      "Total Lines of Code (LOC): #{@metrics.values.sum { |data| data[:loc] || 0 }}",
+      "Total Classes: #{@metrics.values.sum { |data| data[:classes] || 0 }}",
+      "Total Methods: #{@metrics.values.sum { |data| data[:methods].size || 0 }}",
+      "Average Cyclomatic Complexity: #{average_cyclomatic_complexity}",
+      "Files with High Complexity: #{high_complexity_files.count}",
+      "Most Complex File: #{most_complex_file}",
+      "Peak Memory Usage: #{format('%.2f', peak_memory_usage)} MB",
+      "Total Execution Time: #{format('%.2f', total_execution_time)} seconds",
+      "Processing Speed: #{format('%.2f', files_per_second)} files/second",
+      "Average Time per File: #{format('%.2f', average_time_per_file)} seconds"
+    ]
+
+    insights.each do |insight|
+      puts "- #{insight}".colorize(COLOR_SCHEME[:text])
+    end
+
+    puts '=' * @options[:max_output_width] + "\n"
+  end
+
+  # Output commit frequencies in a table.
+  def output_commit_frequencies
+    return "No commit data available. Ensure you're running this in a Git repository.".colorize(COLOR_SCHEME[:warning]) if @commit_frequencies.empty?
+
+    rows = [
+      ['Prior Years', @commit_frequencies[:prior_years]],
+      ['Prior Months This Year', @commit_frequencies[:prior_months]],
+      ['Last 30 Days', @commit_frequencies[:last_30_days]]
+    ]
+    table = TTY::Table.new(
+      header: ['Period'.colorize(COLOR_SCHEME[:heading]), 'Commit Count'.colorize(COLOR_SCHEME[:heading])],
+      rows: rows
+    )
+    table.render(:unicode) do |renderer|
+      renderer.alignments = [:left, :center]
+      renderer.width = @options[:max_output_width]
+    end
+  end
+
+  # Output dependency analysis in a table.
+  def output_dependency_analysis
+    return "No dependencies found or unable to parse requires.".colorize(COLOR_SCHEME[:warning]) if @dependencies.empty?
+
+    sorted_dependencies = @dependencies.sort_by { |_dep, files| -files.size }.first(10)
+    rows = sorted_dependencies.map do |dep, files|
+      [dep, files.size]
+    end
+    table = TTY::Table.new(
+      header: ['Dependency'.colorize(COLOR_SCHEME[:heading]), 'Usage Count'.colorize(COLOR_SCHEME[:heading])],
+      rows: rows
+    )
+    table.render(:unicode) do |renderer|
+      renderer.alignments = [:left, :center]
+      renderer.width = @options[:max_output_width]
+    end
+  end
+
+  # Report files with long processing times.
+  def report_slow_files
+    slow_files = @file_processing_times.sort_by { |_file, time| -time }.first(5)
+    return unless slow_files.any?
+
+    puts "\nFiles with Long Processing Time:".colorize(COLOR_SCHEME[:title])
+    rows = slow_files.map do |file, time|
+      [
+        truncate(file, 40),
+        format('%.2f', time)
+      ]
+    end
+
+    table = TTY::Table.new(
+      header: ['File'.colorize(COLOR_SCHEME[:heading]), 'Time (s)'.colorize(COLOR_SCHEME[:heading])],
+      rows: rows
+    )
+    puts table.render(:unicode)
+  end
+
+  # Truncate a string to a maximum length.
+  def truncate(string, max_length)
+    string.length > max_length ? "#{string[0...max_length - 3]}..." : string
+  end
+
+  # Calculate average cyclomatic complexity across all files.
+  def average_cyclomatic_complexity
+    complexities = @metrics.values.flat_map { |data| data[:methods].map { |m| m[:cyclomatic_complexity] } }
+    return 0 if complexities.empty?
+
+    (complexities.sum.to_f / complexities.size).round(2)
+  end
+
+  # Calculate average cyclomatic complexity for a single file.
+  def average_cyclomatic_complexity_for_file(data)
+    complexities = data[:methods].map { |m| m[:cyclomatic_complexity] }
+    return 0 if complexities.empty?
+
+    (complexities.sum.to_f / complexities.size).round(2)
+  end
+
+  # Get files with high complexity based on threshold.
+  def high_complexity_files
+    threshold = @options[:thresholds][:cyclomatic_complexity] || DEFAULT_THRESHOLD_CYCLOMATIC_COMPLEXITY
+    @metrics.select do |_file, data|
+      data[:methods].any? { |m| m[:cyclomatic_complexity] > threshold }
+    end
+  end
+
+  # Get the most complex file based on cyclomatic complexity.
+  def most_complex_file
+    @metrics.max_by do |_file, data|
+      data[:methods].map { |m| m[:cyclomatic_complexity] }.max || 0
+    end&.first || 'N/A'
+  end
+
+  # Get peak memory usage of the process.
+  def get_peak_memory_usage
+    begin
+      proc_info = ProcTable.ps(Process.pid)
+      memory_usage_kb = proc_info.rss
+      @logger.debug("Retrieved memory usage - #{memory_usage_kb} KB") if @logger.level <= Logger::DEBUG
+      return (memory_usage_kb / 1024.0).round(2) if memory_usage_kb.positive?
+
+      @logger.warn('Unable to retrieve memory usage.'.colorize(COLOR_SCHEME[:warning])) if @logger.level <= Logger::WARN
+      0.0
+    rescue StandardError => e
+      @logger.error("Error retrieving memory usage: #{e.message}".colorize(COLOR_SCHEME[:error]))
+      0.0
+    end
+  end
+
+  # Create LOC distribution chart.
+  def loc_distribution_chart
+    return "No data available for LOC Distribution chart." if @line_counts.empty?
+
+    bucket_size = 100
+    histogram_data = Hash.new(0)
+    @line_counts.each do |loc|
+      bucket = ((loc.to_f / bucket_size).floor) * bucket_size
+      histogram_data[bucket] += 1
+    end
+
+    sorted_data = histogram_data.sort_by { |bucket, _| bucket }
+
+    plot = UnicodePlot.barplot(
+      sorted_data.map { |bucket, _| "#{bucket}-#{bucket + bucket_size - 1}" },
+      sorted_data.map { |_, count| count },
+      title: "LOC Distribution",
+      xlabel: "LOC Range",
+      ylabel: "Number of Files",
+      width: @options[:max_output_width] - 10
+    )
+
+    output = StringIO.new
+    plot.render(output)
+    output.string
+  end
+
+  # Create cyclomatic complexity distribution chart.
+  def cyclomatic_complexity_distribution_chart
+    return "No data available for Cyclomatic Complexity Distribution chart." if @complexity_counts.empty?
+
+    bucket_size = 2
+    histogram_data = Hash.new(0)
+    @complexity_counts.each do |complexity|
+      bucket = ((complexity.to_f / bucket_size).floor) * bucket_size
+      histogram_data[bucket] += 1
+    end
+
+    sorted_data = histogram_data.sort_by { |bucket, _| bucket }
+
+    plot = UnicodePlot.barplot(
+      sorted_data.map { |bucket, _| "#{bucket}-#{bucket + bucket_size - 1}" },
+      sorted_data.map { |_, count| count },
+      title: "Cyclomatic Complexity Distribution",
+      xlabel: "Complexity Range",
+      ylabel: "Number of Methods",
+      width: @options[:max_output_width] - 10
+    )
+
+    output = StringIO.new
+    plot.render(output)
+    output.string
+  end
+
+  # Create comment density distribution chart.
+  def comment_density_distribution_chart
+    return "No data available for Comment Density chart." if @comment_ratios.empty?
+
+    bucket_size = 10
+    histogram_data = Hash.new(0)
+    @comment_ratios.each do |ratio|
+      bucket = ((ratio.to_f / bucket_size).floor) * bucket_size
+      histogram_data[bucket] += 1
+    end
+
+    sorted_data = histogram_data.sort_by { |bucket, _| bucket }
+
+    plot = UnicodePlot.barplot(
+      sorted_data.map { |bucket, _| "#{bucket}%" },
+      sorted_data.map { |_, count| count },
+      title: "Comment Density",
+      xlabel: "Density Range",
+      ylabel: "Files",
+      width: @options[:max_output_width] / 2 - 5
+    )
+
+    output = StringIO.new
+    plot.render(output)
+    output.string
+  end
+
+  # Create code duplication distribution chart.
+  def code_duplication_distribution_chart
+    return "No data available for Code Duplication chart." if @duplication_ratios.empty?
+
+    bucket_size = 5
+    histogram_data = Hash.new(0)
+    @duplication_ratios.each do |ratio|
+      bucket = ((ratio.to_f / bucket_size).floor) * bucket_size
+      histogram_data[bucket] += 1
+    end
+
+    sorted_data = histogram_data.sort_by { |bucket, _| bucket }
+
+    plot = UnicodePlot.barplot(
+      sorted_data.map { |bucket, _| "#{bucket}%" },
+      sorted_data.map { |_, count| count },
+      title: "Code Duplication",
+      xlabel: "Duplication %",
+      ylabel: "Files",
+      width: @options[:max_output_width] / 2 - 5
+    )
+
+    output = StringIO.new
+    plot.render(output)
+    output.string
+  end
+
+  # Format duration from seconds to HH:MM:SS
+  def format_duration(seconds)
+    Time.at(seconds).utc.strftime("%H:%M:%S")
+  rescue
+    "00:00:00"
+  end
+
+  # Print a simple progress bar
+  def print_progress_bar(percentage, screen_width)
+    bar_width = screen_width - 30
+    filled_length = (percentage / 100.0 * bar_width).round
+    bar = "=" * filled_length + "-" * (bar_width - filled_length)
+    puts "[#{bar}] #{percentage}%"
+  end
+
+  # Update the display with grouped metrics
+  def update_display(total_files, processed_files, current_file, start_time, screen_width)
     cursor = TTY::Cursor
-    screen_width = TTY::Screen.width
 
     percentage = (processed_files.to_f / total_files * 100).round(2)
     elapsed_time = Time.now - start_time
     eta = if processed_files > 0
-            (elapsed_time / processed_files) * (total_files - processed_files)
+            ((elapsed_time / processed_files) * (total_files - processed_files))
           else
             0
           end
@@ -265,7 +989,7 @@ class CodeMetricsCollector
     ]
 
     table = TTY::Table.new(rows)
-    table_renderer = table.render(:ascii, alignments: [:left, :right, :left, :right], padding: [0,1,0,1], width: screen_width)
+    table_renderer = table.render(:ascii, alignments: [:left, :right, :left, :right], padding: [0, 1, 0, 1], width: screen_width)
 
     @mutex.synchronize do
       # Move the cursor up to overwrite the previous table and file
@@ -279,431 +1003,15 @@ class CodeMetricsCollector
     # Optional: Sleep briefly to reduce flickering
     sleep(0.05)
   end
-
-  def format_duration(seconds)
-    mm, ss = seconds.divmod(60)
-    hh, mm = mm.divmod(60)
-    "%02d:%02d:%02d" % [hh, mm, ss]
-  end
-
-  # Print a visual progress bar
-  def print_progress_bar(percentage, screen_width)
-    bar_width = screen_width - 20
-    filled_length = (percentage / 100.0 * bar_width).round
-    bar = '█' * filled_length + '-' * (bar_width - filled_length)
-    puts "[#{bar}] #{percentage}%"
-  end
-
-  # Collect metrics from a single Ruby file.
-  def collect_file_metrics(file)
-    file_metrics = {
-      loc: 0,
-      methods: [],
-      classes: 0,
-      issues: [],
-      comments: 0
-    }
-
-    begin
-      content = File.read(file)
-      loc = content.lines.count
-
-      # Skip files with fewer lines than the minimum LOC
-      if loc < @options[:min_loc]
-        @mutex.synchronize { @line_counts << loc }
-        return
-      end
-
-      buffer = Parser::Source::Buffer.new(file)
-      buffer.source = content
-      parser = Parser::CurrentRuby.new
-
-      # Suppress parser warnings during parsing
-      old_stderr = $stderr
-      $stderr = StringIO.new
-
-      ast = parser.parse(buffer)
-
-      $stderr = old_stderr
-
-      file_metrics[:loc] = loc
-      file_metrics[:comments] = count_comments(content)
-
-      visitor = MetricsVisitor.new(file_metrics, @options)
-      visitor.process(ast) if ast
-
-      # Calculate file-level metrics
-      file_metrics[:maintainability_index] = calculate_file_maintainability_index(file_metrics)
-      file_metrics[:comment_density] = calculate_comment_density(file_metrics)
-      file_metrics[:duplication] = calculate_code_duplication(content)
-    rescue Parser::SyntaxError => e
-      @logger.error("Syntax error in #{file}: #{e.message}".colorize(:red))
-      file_metrics[:issues] << "Syntax error: #{e.message}"
-    rescue => e
-      @logger.error("Error processing #{file}: #{e.message}".colorize(:red))
-      file_metrics[:issues] << "Processing error: #{e.message}"
-    ensure
-      @mutex.synchronize do
-        @metrics[file] = file_metrics
-        @line_counts << file_metrics[:loc]
-        @comment_ratios << file_metrics[:comment_density] if file_metrics[:comment_density]
-        @duplication_ratios << file_metrics[:duplication] if file_metrics[:duplication]
-        # Collect cyclomatic complexity data
-        if file_metrics[:methods]
-          file_metrics[:methods].each do |method|
-            @complexity_counts << method[:cyclomatic_complexity]
-          end
-        end
-
-        # Update max complexity
-        if file_metrics[:methods]
-          file_max_complexity = file_metrics[:methods].map { |m| m[:cyclomatic_complexity] }.max || 0
-          if file_max_complexity > @max_complexity
-            @max_complexity = file_max_complexity
-            @max_complexity_file = file
-            @logger.info("New max cyclomatic complexity: #{@max_complexity} in #{file}".colorize(:yellow))
-          end
-        end
-      end
-    end
-  end
-
-  # Generate reports in specified formats.
-  def generate_reports
-    Dir.mkdir(@options[:output_dir]) unless Dir.exist?(@options[:output_dir])
-
-    if @options[:output_format].include?(:json)
-      json_report_path = File.join(@options[:output_dir], 'metrics_report.json')
-      File.write(json_report_path, JSON.pretty_generate(@metrics))
-      @logger.info("JSON report generated at #{json_report_path}".colorize(:green))
-    end
-
-    if @options[:output_format].include?(:csv)
-      csv_report_path = File.join(@options[:output_dir], 'metrics_report.csv')
-      generate_csv_report(csv_report_path)
-      @logger.info("CSV report generated at #{csv_report_path}".colorize(:green))
-    end
-
-    if @options[:output_to_console]
-      output_metrics_to_console
-    end
-
-    if @options[:output_file]
-      File.write(@options[:output_file], JSON.pretty_generate(@metrics))
-      @logger.info("Metrics written to #{@options[:output_file]}".colorize(:green))
-    end
-  end
-
-  # Generate a CSV report.
-  def generate_csv_report(file_path)
-    require 'csv'
-    CSV.open(file_path, 'w') do |csv|
-      headers = %w[File LOC Classes Methods AvgCyclomaticComplexity MaintainabilityIndex CommentDensity Duplication Issues]
-      csv << headers
-
-      @metrics.each do |file, data|
-        csv << [
-          file,
-          data[:loc],
-          data[:classes],
-          data[:methods].size,
-          average_cyclomatic_complexity(data),
-          data[:maintainability_index],
-          data[:comment_density],
-          data[:duplication],
-          data[:issues].join('; ')
-        ]
-      end
-    end
-  end
-
-  # Output metrics to the console in a condensed, tabular format.
-  def output_metrics_to_console
-    require 'terminal-table'
-
-    # Limit output to top 10 files with highest cyclomatic complexity
-    top_files = @metrics.sort_by do |_file, data|
-      -average_cyclomatic_complexity(data)
-    end.first(10)
-
-    rows = top_files.map do |file, data|
-      [
-        truncate(file, 80),
-        data[:loc],
-        data[:classes],
-        data[:methods].size,
-        average_cyclomatic_complexity(data),
-        data[:maintainability_index],
-        data[:issues].size
-      ]
-    end
-
-    table = Terminal::Table.new(
-      title: "Top 10 Files by Cyclomatic Complexity".colorize(:light_magenta),
-      headings: [
-        'File'.colorize(:cyan),
-        'LOC'.colorize(:cyan),
-        'Cls'.colorize(:cyan),
-        'Mth'.colorize(:cyan),
-        'Avg Cmplx'.colorize(:cyan),
-        'MI'.colorize(:cyan),
-        'Issues'.colorize(:cyan)
-      ],
-      rows: rows
-    )
-
-    table.style = { width: @options[:max_output_width], alignment: :left }
-    table.align_column(1, :right)   # LOC
-    table.align_column(2, :center)  # Classes
-    table.align_column(3, :center)  # Methods
-    table.align_column(4, :center)  # Avg Complexity
-    table.align_column(5, :center)  # MI
-    table.align_column(6, :center)  # Issues
-
-    puts "\nTop 10 Files by Cyclomatic Complexity:".colorize(:light_blue)
-    puts "(High complexity methods can be difficult to maintain. Consider refactoring these methods to simplify them.)".colorize(:yellow)
-    puts table
-
-    # Collect all issues across all files
-    all_issues = []
-    @metrics.each do |file, data|
-      data[:issues].each do |issue|
-        all_issues << {
-          file: file,
-          issue: issue,
-          complexity: average_cyclomatic_complexity(data),
-          maintainability_index: data[:maintainability_index],
-          loc: data[:loc]
-        }
-      end
-    end
-
-    # Sort issues by cyclomatic complexity (descending)
-    top_issues = all_issues.sort_by { |issue| -issue[:complexity] }.first(3)
-
-    # Present top 3 issues with detailed information
-    if top_issues.any?
-      puts "\nTop 3 Issues with Full Details:".colorize(:light_blue)
-      top_issues.each_with_index do |issue, index|
-        begin
-          puts "\nIssue ##{index + 1}".colorize(:light_blue)
-          puts "File: #{issue[:file]}".colorize(:cyan)
-          issue_text = truncate(issue[:issue], 80)
-          issue_rows = [
-            [
-              'Issue'.colorize(:cyan),
-              'Complexity'.colorize(:cyan),
-              'MI'.colorize(:cyan),
-              'LOC'.colorize(:cyan)
-            ],
-            [
-              issue_text,
-              issue[:complexity],
-              issue[:maintainability_index],
-              issue[:loc]
-            ]
-          ]
-          issue_table = Terminal::Table.new(rows: issue_rows)
-          issue_table.style = {
-            width: @options[:max_output_width],
-            alignment: :left,
-            all_separators: true
-          }
-          # Set column widths directly on the table
-          issue_table.column_widths = [(@options[:max_output_width] * 0.5).to_i, 15, 10, 10]
-          puts issue_table
-        rescue => e
-          @logger.error("Error displaying issue ##{index + 1}: #{e.message}".colorize(:red))
-        end
-      end
-    else
-      puts "\nNo issues detected.".colorize(:green)
-    end
-
-    # Now, create ASCII charts to show distributions
-    puts "\nLOC Distribution per File:".colorize(:light_blue)
-    begin
-      loc_distribution_chart
-    rescue => e
-      @logger.error("Error generating LOC Distribution chart: #{e.message}".colorize(:red))
-    end
-
-    puts "\nCyclomatic Complexity Distribution:".colorize(:light_blue)
-    begin
-      cyclomatic_complexity_distribution_chart
-    rescue => e
-      @logger.error("Error generating Cyclomatic Complexity chart: #{e.message}".colorize(:red))
-    end
-
-    puts "\nComment Density Across Files (%):".colorize(:light_blue)
-    begin
-      comment_density_distribution_chart
-    rescue => e
-      @logger.error("Error generating Comment Density chart: #{e.message}".colorize(:red))
-    end
-
-    puts "\nCode Duplication in Files (%):".colorize(:light_blue)
-    begin
-      code_duplication_distribution_chart
-    rescue => e
-      @logger.error("Error generating Code Duplication chart: #{e.message}".colorize(:red))
-    end
-  end
-
-  # Create LOC distribution chart
-  def loc_distribution_chart
-    bucket_size = 50
-    histogram_data = Hash.new(0)
-    @line_counts.each do |loc|
-      bucket = ((loc.to_f / bucket_size).floor) * bucket_size
-      histogram_data[bucket] += 1
-    end
-
-    sorted_data = histogram_data.sort_by { |bucket, _| bucket }.first(10).to_h
-
-    plot = UnicodePlot.barplot(sorted_data.keys.map(&:to_s), sorted_data.values, title: "LOC Distribution", xlabel: "LOC Range", ylabel: "Files")
-    puts plot.render
-  end
-
-  # Create cyclomatic complexity distribution chart
-  def cyclomatic_complexity_distribution_chart
-    bucket_size = 1
-    histogram_data = Hash.new(0)
-    @complexity_counts.each do |complexity|
-      bucket = ((complexity.to_f / bucket_size).floor) * bucket_size
-      histogram_data[bucket] += 1
-    end
-
-    sorted_data = histogram_data.sort_by { |bucket, _| bucket }.first(10).to_h
-
-    plot = UnicodePlot.barplot(sorted_data.keys.map(&:to_s), sorted_data.values, title: "Cyclomatic Complexity Distribution", xlabel: "Complexity", ylabel: "Methods")
-    puts plot.render
-  end
-
-  # Create comment density distribution chart
-  def comment_density_distribution_chart
-    bucket_size = 10
-    histogram_data = Hash.new(0)
-    @comment_ratios.each do |ratio|
-      bucket = ((ratio.to_f / bucket_size).floor) * bucket_size
-      histogram_data[bucket] += 1
-    end
-
-    sorted_data = histogram_data.sort_by { |bucket, _| bucket }.first(10).to_h
-
-    plot = UnicodePlot.barplot(sorted_data.keys.map { |k| "#{k}%" }, sorted_data.values, title: "Comment Density", xlabel: "Density Range", ylabel: "Files")
-    puts plot.render
-  end
-
-  # Create code duplication distribution chart
-  def code_duplication_distribution_chart
-    bucket_size = 5
-    histogram_data = Hash.new(0)
-    @duplication_ratios.each do |ratio|
-      bucket = ((ratio.to_f / bucket_size).floor) * bucket_size
-      histogram_data[bucket] += 1
-    end
-
-    sorted_data = histogram_data.sort_by { |bucket, _| bucket }.first(10).to_h
-
-    plot = UnicodePlot.barplot(sorted_data.keys.map { |k| "#{k}%" }, sorted_data.values, title: "Code Duplication", xlabel: "Duplication %", ylabel: "Files")
-    puts plot.render
-  end
-
-  # Calculate average cyclomatic complexity for a file.
-  def average_cyclomatic_complexity(data)
-    complexities = data[:methods].map { |m| m[:cyclomatic_complexity] }
-    return 0 if complexities.empty?
-    (complexities.sum.to_f / complexities.size).round(2)
-  end
-
-  # Calculate the maintainability index for the entire file.
-  def calculate_file_maintainability_index(data)
-    total_volume = data[:methods].sum { |m| m[:halstead][:volume] || 0 }
-    total_cyclomatic_complexity = data[:methods].sum { |m| m[:cyclomatic_complexity] || 0 }
-    loc = data[:loc] || 0
-
-    mi = 171 - 5.2 * Math.log(volume_nonzero(total_volume)) - 0.23 * total_cyclomatic_complexity - 16.2 * Math.log(loc_nonzero(loc))
-    mi = [[mi, 0].max, 100].min
-    mi.round(2)
-  end
-
-  # Handle zero values in logarithms
-  def volume_nonzero(volume)
-    volume > 0 ? volume : 1
-  end
-
-  def loc_nonzero(loc)
-    loc > 0 ? loc : 1
-  end
-
-  # Calculate comment density for a file
-  def calculate_comment_density(data)
-    comment_lines = data[:comments]
-    loc = data[:loc]
-    return 0 if loc.zero?
-    ((comment_lines.to_f / loc) * 100).round(2)
-  end
-
-  # Count comment lines in the content
-  def count_comments(content)
-    content.lines.count { |line| line.strip.start_with?('#') }
-  end
-
-  # Calculate code duplication percentage
-  def calculate_code_duplication(content)
-    lines = content.lines.map(&:strip).reject(&:empty?)
-    total_lines = lines.size
-    unique_lines = lines.uniq.size
-    duplicated_lines = total_lines - unique_lines
-    return 0 if total_lines.zero?
-    ((duplicated_lines.to_f / total_lines) * 100).round(2)
-  end
-
-  # Get peak memory usage in MB
-  def get_peak_memory_usage
-    # Approximate current memory usage
-    memory_usage_kb = `ps -o rss= -p #{Process.pid}`.to_i
-    (memory_usage_kb / 1024.0).round(2)
-  end
-
-  # Report files with long processing times
-  def report_slow_files
-    slow_files = @file_processing_times.sort_by { |_file, time| -time }.first(5)
-    if slow_files.any?
-      puts "\nFiles with Long Processing Time:".colorize(:light_blue)
-      rows = slow_files.map do |file, time|
-        [
-          truncate(file, 40),
-          format('%.2f', time)
-        ]
-      end
-
-      table = Terminal::Table.new(
-        headings: ['File'.colorize(:cyan), 'Time (s)'.colorize(:cyan)],
-        rows: rows
-      )
-      table.style = { width: @options[:max_output_width], alignment: :left }
-      puts table
-    end
-  end
-
-  # Truncate a string to a maximum length
-  def truncate(string, max_length)
-    if string.length > max_length
-      string[0...max_length - 3] + '...'
-    else
-      string
-    end
-  end
 end
 
 # MetricsVisitor traverses the AST and collects metrics.
 class MetricsVisitor < Parser::AST::Processor
+  COMPLEXITY_NODES = %i[if while until for rescue when and or case].freeze
+
   def initialize(file_metrics, options)
     @file_metrics = file_metrics
     @options = options
-    @current_nesting = 0
   end
 
   # Process class definitions.
@@ -757,13 +1065,19 @@ class MetricsVisitor < Parser::AST::Processor
   def traverse_for_complexity(node, complexity)
     return complexity unless node.is_a?(Parser::AST::Node)
 
-    if %i[if while until for rescue when and or case].include?(node.type)
+    if COMPLEXITY_NODES.include?(node.type) || logical_operator?(node)
       complexity += 1
     end
 
-    node.children.reduce(complexity) do |comp, child|
-      traverse_for_complexity(child, comp)
+    node.children.each do |child|
+      complexity = traverse_for_complexity(child, complexity) if child.is_a?(Parser::AST::Node)
     end
+
+    complexity
+  end
+
+  def logical_operator?(node)
+    node.type == :send && %i[&& ||].include?(node.children[1])
   end
 
   # Calculate Halstead metrics.
@@ -786,7 +1100,7 @@ class MetricsVisitor < Parser::AST::Processor
       end
     else
       node.children.each do |child|
-        calculate_halstead_metrics(child, metrics)
+        calculate_halstead_metrics(child, metrics) if child.is_a?(Parser::AST::Node)
       end
     end
 
@@ -797,11 +1111,7 @@ class MetricsVisitor < Parser::AST::Processor
     vocabulary = n1 + n2
     length = n1_total + n2_total
 
-    metrics[:volume] = if vocabulary > 0
-      length * Math.log2(vocabulary)
-    else
-      0
-    end
+    metrics[:volume] = vocabulary.positive? ? (length * Math.log2(vocabulary)) : 0
 
     metrics
   end
@@ -816,8 +1126,8 @@ class MetricsVisitor < Parser::AST::Processor
 
     max_depth = depth
     node.children.each do |child|
-      child_depth = calculate_max_nesting_depth(child, depth)
-      max_depth = [max_depth, child_depth].max
+      child_depth = calculate_max_nesting_depth(child, depth) if child.is_a?(Parser::AST::Node)
+      max_depth = [max_depth, child_depth].max if child_depth
     end
 
     max_depth
@@ -826,23 +1136,24 @@ class MetricsVisitor < Parser::AST::Processor
   # Calculate lines of code for a method.
   def calculate_loc(node)
     return 0 unless node.is_a?(Parser::AST::Node)
-    start_line = node.loc.expression.line
-    end_line = node.loc.expression.last_line
-    end_line - start_line + 1
-  rescue
-    0
+
+    begin
+      start_line = node.loc.expression.line
+      end_line = node.loc.expression.last_line
+      end_line - start_line + 1
+    rescue
+      0
+    end
   end
 
   # Calculate maintainability index.
   def calculate_maintainability_index(cyclomatic_complexity, volume, loc)
-    volume ||= 0
-    loc ||= 0
     mi = 171 - 5.2 * Math.log(volume_nonzero(volume)) - 0.23 * cyclomatic_complexity - 16.2 * Math.log(loc_nonzero(loc))
     mi = [[mi, 0].max, 100].min
     mi.round(2)
   end
 
-  # Handle zero values in logarithms
+  # Handle zero values in logarithms.
   def volume_nonzero(volume)
     volume > 0 ? volume : 1
   end
@@ -853,15 +1164,15 @@ class MetricsVisitor < Parser::AST::Processor
 
   # Detect code smells and add issues to the file metrics.
   def detect_code_smells(method_name, cyclomatic_complexity, max_nesting_depth, params_count)
-    if cyclomatic_complexity > (@options[:thresholds][:cyclomatic_complexity] || 10)
+    if cyclomatic_complexity > (@options[:thresholds][:cyclomatic_complexity] || DEFAULT_THRESHOLD_CYCLOMATIC_COMPLEXITY)
       @file_metrics[:issues] << "High complexity in '#{method_name}' (#{cyclomatic_complexity})."
     end
 
-    if max_nesting_depth > (@options[:thresholds][:nesting_depth] || 5)
+    if max_nesting_depth > (@options[:thresholds][:nesting_depth] || DEFAULT_THRESHOLD_NESTING_DEPTH)
       @file_metrics[:issues] << "Deep nesting in '#{method_name}' (#{max_nesting_depth} levels)."
     end
 
-    if params_count > (@options[:thresholds][:parameters] || 4)
+    if params_count > (@options[:thresholds][:parameters] || DEFAULT_THRESHOLD_PARAMETERS)
       @file_metrics[:issues] << "Too many parameters in '#{method_name}' (#{params_count})."
     end
   end
@@ -870,17 +1181,17 @@ end
 # Parse command-line options and run the collector
 options = {}
 OptionParser.new do |opts|
-  opts.banner = "Usage: ./code_metrics_collector.rb -d DIRECTORY [options]"
+  opts.banner = "Usage: ./CodeMetricsCollector.rb -d DIRECTORY [options]"
 
   opts.on("-d", "--directory PATH", "Directory to analyze") do |d|
     options[:directory] = d
   end
 
-  opts.on("-o", "--output-dir DIR", "Directory to save reports (default: metrics_reports)") do |o|
+  opts.on("-o", "--output-dir DIR", "Directory to save reports (default: #{DEFAULT_OUTPUT_DIR})") do |o|
     options[:output_dir] = o
   end
 
-  opts.on("--output-file FILE", "File to save metrics report") do |f|
+  opts.on("--output-file FILE", "File to save metrics report (without extension)") do |f|
     options[:output_file] = f
   end
 
@@ -888,12 +1199,17 @@ OptionParser.new do |opts|
     options[:output_format] = f.split(',').map(&:to_sym)
   end
 
-  opts.on("-t", "--threads COUNT", Integer, "Number of threads (default: 4)") do |t|
+  opts.on("-t", "--threads COUNT", Integer, "Number of threads (default: #{DEFAULT_THREAD_COUNT})") do |t|
     options[:thread_count] = t
   end
 
   opts.on("-l", "--log-level LEVEL", "Log level (DEBUG, INFO, WARN, ERROR) (default: INFO)") do |l|
-    options[:log_level] = Logger.const_get(l.upcase)
+    begin
+      options[:log_level] = Logger.const_get(l.upcase)
+    rescue NameError
+      puts "Invalid log level: #{l}. Using default: INFO."
+      options[:log_level] = DEFAULT_LOG_LEVEL
+    end
   end
 
   opts.on("--no-incremental", "Disable incremental analysis") do
@@ -913,15 +1229,23 @@ OptionParser.new do |opts|
   opts.on("--threshold METRIC=VALUE", "Set threshold for a metric (e.g., --threshold cyclomatic_complexity=15)") do |threshold|
     key, value = threshold.split('=')
     options[:thresholds] ||= {}
-    options[:thresholds][key.to_sym] = value.to_i
+    options[:thresholds][key.to_sym] = value.to_i if key && value
   end
 
   opts.on("--no-console-output", "Disable output to console") do
     options[:output_to_console] = false
   end
 
-  opts.on("--min-loc VALUE", Integer, "Minimum LOC to analyze a file (default: 100)") do |value|
+  opts.on("--min-loc VALUE", Integer, "Minimum LOC to analyze a file (default: #{DEFAULT_MIN_LOC})") do |value|
     options[:min_loc] = value
+  end
+
+  opts.on("--max-output-width VALUE", Integer, "Maximum output width for terminal (default: auto-detect)") do |value|
+    options[:max_output_width] = value
+  end
+
+  opts.on("-v", "--verbose", "Run verbosely (set log level to DEBUG)") do
+    options[:log_level] = Logger::DEBUG
   end
 
   opts.on("-h", "--help", "Displays Help") do
@@ -931,12 +1255,12 @@ OptionParser.new do |opts|
 end.parse!
 
 # Validate required options.
-unless options[:directory]
+if options[:directory].nil?
   puts "Error: Directory is required."
-  puts "Usage: ./code_metrics_collector.rb -d /path/to/your/project"
+  puts "Usage: ./CodeMetricsCollector.rb -d /path/to/your/project [options]"
   exit 1
 end
 
 # Run the collector.
 collector = CodeMetricsCollector.new(options[:directory], options)
-metrics = collector.collect_metrics
+collector.collect_metrics

@@ -21,3 +21,6 @@ max_threads: 4
 main_files:
   - main.rb
   - application.rb
+  - release_scan_v2.rb
+  - release_card_creation.rb
+  - omnibus_card_creation.rb
