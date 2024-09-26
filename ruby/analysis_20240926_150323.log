@@ -1,0 +1,363 @@
+Starting Comprehensive Repository Analysis for '../jira-automation'...
+Log File: /Users/randall.noval/code/CodeJanitor/ruby/analysis_20240926_150323.log
+
+--- Directory Structure ---
+Directory Structure for /Users/randall.noval/code/jira-automation (max depth: 3):
+
+  📄 .DS_Store
+  📄 .env
+  📄 .env.example
+📁 .git/
+    📄 HEAD
+    📄 config
+    📄 description
+  📁 hooks/
+      📄 applypatch-msg.sample
+      📄 commit-msg.sample
+      📄 fsmonitor-watchman.sample
+      📄 post-update.sample
+      📄 pre-applypatch.sample
+      📄 pre-commit.sample
+      📄 pre-merge-commit.sample
+      📄 pre-push.sample
+      📄 pre-rebase.sample
+      📄 pre-receive.sample
+      📄 prepare-commit-msg.sample
+      📄 push-to-checkout.sample
+      📄 sendemail-validate.sample
+      📄 update.sample
+    📄 index
+  📁 info/
+      📄 exclude
+  📁 logs/
+      📄 HEAD
+    📁 refs/
+      📁 heads/
+      📁 remotes/
+  📁 objects/
+    📁 info/
+    📁 pack/
+        📄 pack-1fa055edb181f0d1f558c93b8b8b684637473273.idx
+        📄 pack-1fa055edb181f0d1f558c93b8b8b684637473273.pack
+        📄 pack-1fa055edb181f0d1f558c93b8b8b684637473273.rev
+    📄 packed-refs
+  📁 refs/
+    📁 heads/
+        📄 main
+    📁 remotes/
+      📁 origin/
+    📁 tags/
+  📄 .gitignore
+  📄 .jenkins-tests-pod.yaml
+  📄 .rspec
+  📄 .rubocop.yml
+  📄 .ruby-version
+  📄 CODEOWNERS
+  📄 Gemfile
+  📄 Gemfile.lock
+  📄 Jenkinsfile.test
+  📄 PULL_REQUEST_TEMPLATE.md
+  📄 README.md
+📁 attachments/
+    📄 github_api_token_button.png
+    📄 github_api_token_enable_sso.png
+    📄 github_api_token_give_permission.png
+    📄 jira_token.png
+  📄 boot.rb
+📁 cli_utils/
+    📄 string_rainbow.rb
+    📄 user_input.rb
+📁 clients/
+  📁 adapters/
+      📄 http_adapter.rb
+  📁 config/
+      📄 github-schema.json
+    📄 github_client.rb
+    📄 jira_client.rb
+  📄 config.yml
+📁 context/
+    📄 run_context.rb
+📁 helpers/
+    📄 github_helper.rb
+    📄 jira_helper.rb
+    📄 release_card_helper.rb
+📁 initializers/
+    📄 release_note_initializer.rb
+    📄 release_scan_initializer.rb
+  📄 jenkinsfile-omnibus-card-creation
+  📄 jenkinsfile-release-card-creation
+  📄 jenkinsfile-release-notes
+  📄 jenkinsfile-release-scanner
+📁 loaders/
+    📄 base_loader.rb
+  📁 github/
+      📄 github_branch_loader.rb
+      📄 github_pull_request_loader.rb
+      📄 github_repository_loader.rb
+      📄 github_tag_loader.rb
+    📄 github_loader.rb
+  📁 jira/
+    📁 fields/
+        📄 custom_ticket_fields.rb
+        📄 generic_ticket_fields.rb
+      📄 jira_ticket.rb
+      📄 jira_ticket_loader.rb
+📁 omnibus_card/
+    📄 check_merged_prs.rb
+    📄 link_omnibus_releases.rb
+    📄 omnibus_deployment_plan.rb
+    📄 omnibus_processor.rb
+  📄 omnibus_card_creation.rb
+  📄 omnibus_config.yml
+  📄 omnibus_scanner.rb
+📁 parsers/
+    📄 argument_parser.rb
+    📄 jira_card_commit_parser.rb
+📁 release_card/
+    📄 base_field.rb
+    📄 components_field.rb
+    📄 create_pull_request.rb
+    📄 deployment_plan_field.rb
+    📄 fix_version.rb
+    📄 initializer.rb
+    📄 processor.rb
+    📄 release_processor.rb
+  📄 release_card_creation.rb
+📁 release_note/
+    📄 generator.rb
+    📄 note_processor.rb
+  📄 release_note_generation.rb
+  📄 release_scan_v2.rb
+📁 requests/
+    📄 github_requests.rb
+📁 spec/
+  📁 factories/
+      📄 attrs.rb
+      📄 custom_fields.rb
+      📄 generic_fields.rb
+      📄 has_many_proxies.rb
+      📄 jira_cards.rb
+      📄 jira_clients.rb
+      📄 jira_http_clients.rb
+      📄 jira_issues.rb
+      📄 jira_resource_components.rb
+      📄 reporters.rb
+      📄 tickets.rb
+      📄 users.rb
+  📁 fixtures/
+      📄 new_graphql_schema.json
+      📄 old_graphql_schema.json
+  📁 helpers/
+      📄 github_helper_spec.rb
+      📄 jira_helper_spec.rb
+      📄 release_card_helper_spec.rb
+  📁 loaders/
+    📁 jira/
+        📄 jira_ticket_spec.rb
+  📁 omnibus_card/
+      📄 check_merged_prs_spec.rb
+      📄 link_omnibus_releases_spec.rb
+      📄 omnibus_deployment_plan_spec.rb
+  📁 parsers/
+      📄 jira_card_commit_parser_spec.rb
+  📁 release_card/
+      📄 components_field_spec.rb
+      📄 create_pull_request_spec.rb
+      📄 deployment_plan_field_spec.rb
+      📄 fix_version_spec.rb
+      📄 processor_spec.rb
+  📁 release_notes/
+      📄 generator_spec.rb
+      📄 note_processor_spec.rb
+  📁 shared_examples/
+      📄 shared_task.rb
+    📄 spec_helper.rb
+  📁 support/
+      📄 factory_bot.rb
+      📄 factory_bot_accessors.rb
+  📁 tasks/
+      📄 blueshift_metrics_check_spec.rb
+      📄 branch_exists_check_task_spec.rb
+      📄 branch_name_check_task_spec.rb
+      📄 branch_up_to_date_check_task_spec.rb
+      📄 cause_links_check_task_spec.rb
+      📄 change_type_check_task_spec.rb
+      📄 check_feature_toggles_task_spec.rb
+      📄 code_ownership_metrics_check_spec.rb
+      📄 complexity_score_spec.rb
+      📄 components_missing_check_task_spec.rb
+      📄 confirm_added_deleted_task_spec.rb
+      📄 cont_card_check_task_spec.rb
+      📄 env_variables_check_task_spec.rb
+      📄 git_revert_check_task_spec.rb
+      📄 graphql_schema_check_task_spec.rb
+      📄 linked_ticket_status_check_task_spec.rb
+      📄 migration_check_task_spec.rb
+      📄 pr_approvals_check_task_spec.rb
+      📄 pull_request_check_task_spec.rb
+      📄 qa_signoff_task_spec.rb
+      📄 release_link_detection_task_spec.rb
+      📄 release_links_check_task_spec.rb
+      📄 release_notes_check_task_spec.rb
+      📄 release_ticket_link_task_spec.rb
+      📄 run_migrations_task_spec.rb
+      📄 special_repo_check_task_spec.rb
+      📄 specs_check_task_spec.rb
+      📄 task_serializer_spec.rb
+      📄 tasks_processor_spec.rb
+      📄 wcag_check_task_spec.rb
+      📄 websdk_release_check_task_spec.rb
+  📁 vcr_cassettes/
+      📄 jira_ticket.yml
+    📄 vcr_setup.rb
+📁 statuses/
+    📄 base_task_status.rb
+    📄 task_error_status.rb
+    📄 task_excluded_status.rb
+    📄 task_fail_status.rb
+    📄 task_incomplete_status.rb
+    📄 task_info_status.rb
+    📄 task_skipped_status.rb
+    📄 task_success_status.rb
+    📄 task_warn_status.rb
+📁 support/
+    📄 github_scanner.rb
+    📄 jira_scanner.rb
+📁 tasks/
+    📄 base_task.rb
+    📄 blueshift_metrics_check.rb
+    📄 branch_exists_check_task.rb
+    📄 branch_name_check_task.rb
+    📄 branch_up_to_date_check_task.rb
+    📄 cause_links_check_task.rb
+    📄 change_type_check.rb
+    📄 check_feature_toggles_task.rb
+    📄 code_ownership_metrics_check.rb
+    📄 complexity_score.rb
+    📄 components_missing_check_task.rb
+  📁 concerns/
+      📄 eventable.rb
+    📄 confirm_added_deleted_task.rb
+    📄 cont_card_check_task.rb
+    📄 env_variables_check_task.rb
+    📄 git_revert_check_task.rb
+    📄 graphql_schema_check_task.rb
+    📄 linked_ticket_status_check_task.rb
+    📄 migration_check_task.rb
+    📄 pr_approvals_check_task.rb
+    📄 pull_request_check_task.rb
+    📄 qa_signoff_task.rb
+    📄 release_link_detection_task.rb
+    📄 release_links_check_task.rb
+    📄 release_notes_check_task.rb
+    📄 release_ticket_link_task.rb
+    📄 run_migrations_task.rb
+    📄 special_repo_check_task.rb
+    📄 specs_check_task.rb
+    📄 task_serializer.rb
+    📄 tasks_processor.rb
+    📄 wcag_check_task.rb
+    📄 websdk_release_check_task.rb
+Directory Structure Analysis completed successfully.
+
+--- Key Files Identification ---
+=== Key Files Identification ===
+Detected Project Type: Rails/Ruby Project
+✅ Found: Gemfile
+✅ Found: Gemfile.lock
+❌ Missing: Rakefile
+❌ Missing: config.ru
+❌ Missing: config/application.rb
+❌ Missing: config/environment.rb
+❌ Missing: config/routes.rb
+❌ Missing: config/database.yml
+❌ Missing: app/controllers/application_controller.rb
+❌ Missing: bin/rails
+❌ Missing: bin/rake
+✅ Found: README.md
+=================================
+Key Files Identification completed successfully.
+
+--- Dependency Analysis ---
+[DEPRECATED] `Bundler.with_clean_env` has been deprecated in favor of `Bundler.with_unbundled_env`. If you instead want the environment before bundler was originally loaded, use `Bundler.with_original_env` (called at /Users/randall.noval/code/CodeJanitor/ruby/dependency_analysis.rb:9)
+=== Dependency Analysis for ../jira-automation ===
+=== Bundler Dependencies ===
+Error loading Gemfile: Could not locate Gemfile or .bundle/ directory
+
+=== Gemspec Dependencies ===
+No gemspec files found.
+
+package.json not found.
+=========================================
+Dependency Analysis completed successfully.
+
+--- Code Metrics and Complexity ---
+=== Code Metrics and Complexity ===
+rbenv: rubocop: command not found
+
+The `rubocop' command exists in these Ruby versions:
+  3.1.2
+
+Error running RuboCop.
+Code Metrics and Complexity Analysis failed.
+
+--- Documentation and README Analysis ---
+=== Documentation and README Analysis ===
+Detected Project Type: Rails/Ruby Project
+✅ Found README files:
+./README.md
+❌ 'docs' directory not found.
+⚠️ Directory './app' not found for inline documentation check.
+========================================
+
+=== Markdown Linting ===
+./README.md:12 MD022/blanks-around-headings Headings should be surrounded by blank lines [Expected: 1; Actual: 0; Below] [Context: "# Local Setup"]
+./README.md:12 MD025/single-title/single-h1 Multiple top-level headings in the same document [Context: "Local Setup"]
+./README.md:13 MD022/blanks-around-headings Headings should be surrounded by blank lines [Expected: 1; Actual: 0; Above] [Context: "## Prerequisites"]
+./README.md:14:1 MD009/no-trailing-spaces Trailing spaces [Expected: 0 or 2; Actual: 1]
+./README.md:15:1 MD004/ul-style Unordered list style [Expected: dash; Actual: asterisk]
+./README.md:23:3 MD045/no-alt-text Images should have alternate text (alt text)
+./README.md:27:3 MD045/no-alt-text Images should have alternate text (alt text)
+./README.md:31:3 MD045/no-alt-text Images should have alternate text (alt text)
+./README.md:33 MD012/no-multiple-blanks Multiple consecutive blank lines [Expected: 1; Actual: 2]
+./README.md:34:1 MD004/ul-style Unordered list style [Expected: dash; Actual: asterisk]
+./README.md:44:3 MD045/no-alt-text Images should have alternate text (alt text)
+./README.md:46 MD022/blanks-around-headings Headings should be surrounded by blank lines [Expected: 1; Actual: 0; Below] [Context: "## All the steps necessary to run release scanner"]
+./README.md:47:1 MD004/ul-style Unordered list style [Expected: dash; Actual: asterisk]
+./README.md:47 MD032/blanks-around-lists Lists should be surrounded by blank lines [Context: "* If you dont have a .env, cre..."]
+./README.md:48:1 MD004/ul-style Unordered list style [Expected: dash; Actual: asterisk]
+./README.md:49:3 MD004/ul-style Unordered list style [Expected: dash; Actual: asterisk]
+./README.md:50:3 MD004/ul-style Unordered list style [Expected: dash; Actual: asterisk]
+./README.md:51:3 MD004/ul-style Unordered list style [Expected: dash; Actual: asterisk]
+./README.md:53:1 MD004/ul-style Unordered list style [Expected: dash; Actual: asterisk]
+./README.md:53 MD032/blanks-around-lists Lists should be surrounded by blank lines [Context: "* Install dependencies:"]
+./README.md:54 MD031/blanks-around-fences Fenced code blocks should be surrounded by blank lines [Context: "```bash"]
+./README.md:55:1 MD014/commands-show-output Dollar signs used before commands without showing output [Context: "$ bundle install"]
+./README.md:58:1 MD004/ul-style Unordered list style [Expected: dash; Actual: asterisk]
+./README.md:58 MD032/blanks-around-lists Lists should be surrounded by blank lines [Context: "* Run the script to validate r..."]
+./README.md:59 MD031/blanks-around-fences Fenced code blocks should be surrounded by blank lines [Context: "```bash"]
+./README.md:60:1 MD014/commands-show-output Dollar signs used before commands without showing output [Context: "$ bundle exec ruby release_sca..."]
+./README.md:63 MD025/single-title/single-h1 Multiple top-level headings in the same document [Context: "Release Card Creation"]
+./README.md:74:1 MD004/ul-style Unordered list style [Expected: dash; Actual: asterisk]
+./README.md:74 MD032/blanks-around-lists Lists should be surrounded by blank lines [Context: "* Run the script to create rel..."]
+./README.md:75 MD031/blanks-around-fences Fenced code blocks should be surrounded by blank lines [Context: "```bash"]
+./README.md:76:1 MD014/commands-show-output Dollar signs used before commands without showing output [Context: "$ bundle exec ruby release_car..."]
+./README.md:79 MD025/single-title/single-h1 Multiple top-level headings in the same document [Context: "Omnibus Release Card Creation"]
+./README.md:90:1 MD004/ul-style Unordered list style [Expected: dash; Actual: asterisk]
+./README.md:90 MD032/blanks-around-lists Lists should be surrounded by blank lines [Context: "* Run the script to create omn..."]
+./README.md:91 MD031/blanks-around-fences Fenced code blocks should be surrounded by blank lines [Context: "```bash"]
+./README.md:92:1 MD014/commands-show-output Dollar signs used before commands without showing output [Context: "$ bundle exec ruby omnibus_car..."]
+./README.md:93:3 MD047/single-trailing-newline Files should end with a single newline character
+Markdown linting completed with issues.
+Documentation and README Analysis completed successfully.
+
+--- Ownership Insights ---
+=== Ownership Insights ===
+Valentyn Ilto: 10800 lines
+Yurii Zhupanov: 1375 lines
+Oleh Yarmoliuk: 238 lines
+Paul Caplan: 14 lines
+============================
+Ownership Insights Analysis completed successfully.
+
+Repository Analysis Completed. Check the log file '/Users/randall.noval/code/CodeJanitor/ruby/analysis_20240926_150323.log' for details.

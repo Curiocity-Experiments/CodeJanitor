@@ -1,0 +1,20 @@
+{
+  "name": "codejanitor",
+  "version": "1.0.0",
+  "description": "CodeJanitor",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@babel/parser": "^7.22.5",
+    "@babel/traverse": "^7.22.5",
+    "commander": "^10.0.0",
+    "inquirer": "^9.1.4",
+    "node-fetch": "^3.3.2"
+  }
+}
