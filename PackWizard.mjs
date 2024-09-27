@@ -1,31 +1,18 @@
 #!/usr/bin/env node
 
 /**
- * PackWizard™
+ * PackWizard™ - Updated Version
  *
- * 🧙‍♂️✨ "Abracadabra! Watch your package.json magically appear!" ✨🧙‍♂️
+ * 🧙‍♂️✨ "Even more magical!" ✨🧙‍♂️
  *
- * A magical tool to automatically generate and maintain your package.json by scanning your project's dependencies.
- *
- * Features:
- * - Automatically detects dependencies
- * - Integrates with existing package.json without overwriting
- * - Fetches the latest versions from npm registry
- * - Excludes irrelevant directories like node_modules, .git, coverage, dist, build
- * - Interactive prompts to review changes
- * - Supports custom configuration and version strategies
+ * New Features:
+ * - Identifies and removes unnecessary dependencies
+ * - Detects dependencies with incorrect versions
+ * - Checks for missing or needed changes in package.json
  *
  * Usage:
  *   packwizard [options] [directory]
  *
- * Options:
- *   -d, --dir <directory>           Root directory to start from (default: current directory)
- *   -o, --output <file>             Output package.json file (default: "package.json")
- *   --exclude <dirs>                Comma-separated list of directories to exclude (default: from config)
- *   --version-strategy <strategy>   Version strategy: latest, caret, tilde, exact (default: from config)
- *   --dry-run                       Simulate the generation process without making changes
- *   --verbose                       Enable verbose logging for debugging purposes
- *   -h, --help                      Display help for command
  */
 
 import { promises as fs } from "fs";
@@ -38,11 +25,8 @@ import { createInterface } from "readline";
 
 // Create a require function
 const require = createRequire(import.meta.url);
-
-// Import traverse using require
 const traverse = require("@babel/traverse").default;
 
-// Configuration Section
 const config = {
 	defaultExcludeDirs: ["node_modules", ".git", "coverage", "dist", "build"],
 	defaultVersionStrategy: "latest",
@@ -50,14 +34,24 @@ const config = {
 	defaultOutputFile: "package.json",
 };
 
-// Check if traverse is a function
-if (typeof traverse !== "function") {
-	throw new Error("traverse is not a function. Please check the import statement.");
+const spinnerFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+let spinnerIndex = 0;
+let spinnerInterval;
+
+function startSpinner() {
+	spinnerInterval = setInterval(() => {
+		process.stdout.write(`\r${spinnerFrames[spinnerIndex]} Scanning files...`);
+		spinnerIndex = (spinnerIndex + 1) % spinnerFrames.length;
+	}, 100);
 }
 
-// Configure CLI options using Commander
+function stopSpinner() {
+	clearInterval(spinnerInterval);
+	process.stdout.write("\r✓ Scanning complete!\n");
+}
+
 program
-	.version("2.0.0")
+	.version("2.2.0")
 	.description(
 		"PackWizard™: Magically generate and maintain your package.json by scanning project dependencies.",
 	)
@@ -77,42 +71,35 @@ program
 	.option("--verbose", "Enable verbose logging for debugging purposes")
 	.parse(process.argv);
 
-// Check if any arguments are provided, if not, show help
 if (program.args.length === 0) {
 	program.help();
 }
 
 const options = program.opts();
 const rootDir = program.args[0] || ".";
-
-// Resolve directories based on options and config
 const packageJsonPath = path.resolve(rootDir, options.output);
 const excludedDirs = new Set(options.exclude.split(",").map((dir) => dir.trim()));
 const versionStrategy = options.versionStrategy.toLowerCase();
 const isDryRun = options.dryRun || false;
 const isVerbose = options.verbose || false;
 
-// Initialize dependency sets
 const dependencies = new Set();
 
-// Utility function for logging
 const log = (message) => {
 	if (isVerbose) {
 		console.log(`[PackWizard™] ${message}`);
 	}
 };
 
-// Function to extract the base package name
 function getPackageName(importPath) {
-	if (importPath.startsWith(".")) return null; // Ignore relative imports
+	if (importPath.startsWith(".")) return null;
 	const parts = importPath.split("/");
 	if (importPath.startsWith("@") && parts.length > 1) {
-		return `${parts[0]}/${parts[1]}`; // Scoped package
+		return `${parts[0]}/${parts[1]}`;
 	}
 	return parts[0];
 }
 
-// Function to fetch the latest version from npm registry
 async function getLatestVersion(packageName) {
 	try {
 		const res = await fetch(`https://registry.npmjs.org/${packageName}/latest`);
@@ -127,7 +114,6 @@ async function getLatestVersion(packageName) {
 	}
 }
 
-// Function to assign versions based on the chosen strategy
 async function assignVersion(packageName) {
 	switch (versionStrategy) {
 		case "caret":
@@ -152,24 +138,19 @@ async function processFile(filePath) {
 		try {
 			ast = babelParser.parse(content, {
 				sourceType: "unambiguous",
-				plugins: [
-					"jsx",
-					"typescript",
-					"dynamicImport",
-					// Add other plugins as needed
-				],
+				plugins: ["jsx", "typescript", "dynamicImport"],
 			});
 		} catch (parseError) {
 			console.error(`[PackWizard™] Parsing error in file ${filePath}: ${parseError.message}`);
-			return; // Skip this file if parsing fails
+			return;
 		}
 
 		if (ast) {
-			// Ensure ast is defined before traversing
 			traverse(ast, {
 				ImportDeclaration({ node }) {
 					const packageName = getPackageName(node.source.value);
 					if (packageName) {
+						log(`Found dependency "${packageName}" in file ${filePath}`);
 						dependencies.add(packageName);
 					}
 				},
@@ -181,6 +162,7 @@ async function processFile(filePath) {
 					) {
 						const packageName = getPackageName(node.arguments[0].value);
 						if (packageName) {
+							log(`Found dependency "${packageName}" in file ${filePath}`);
 							dependencies.add(packageName);
 						}
 					}
@@ -190,6 +172,7 @@ async function processFile(filePath) {
 					if (argument && argument.type === "StringLiteral") {
 						const packageName = getPackageName(argument.value);
 						if (packageName) {
+							log(`Found dependency "${packageName}" in file ${filePath}`);
 							dependencies.add(packageName);
 						}
 					}
@@ -203,14 +186,12 @@ async function processFile(filePath) {
 	}
 }
 
-// Recursive function to traverse directories
 async function traverseDirectory(dir) {
 	try {
 		const entries = await fs.readdir(dir, { withFileTypes: true });
 		for (const entry of entries) {
 			const entryPath = path.join(dir, entry.name);
 
-			// Exclude specified directories
 			if (excludedDirs.has(entry.name)) {
 				log(`Skipping excluded directory: ${entryPath}`);
 				continue;
@@ -232,7 +213,6 @@ async function traverseDirectory(dir) {
 	}
 }
 
-// Function to read existing package.json if it exists
 async function readExistingPackageJson() {
 	try {
 		const existingContent = await fs.readFile(packageJsonPath, "utf-8");
@@ -254,7 +234,6 @@ async function readExistingPackageJson() {
 	}
 }
 
-// Function to merge detected dependencies with existing ones
 async function mergeDependencies(existingPackageJson) {
 	existingPackageJson.dependencies = existingPackageJson.dependencies || {};
 
@@ -262,68 +241,143 @@ async function mergeDependencies(existingPackageJson) {
 		if (!existingPackageJson.dependencies[dep]) {
 			const version = await assignVersion(dep);
 			existingPackageJson.dependencies[dep] = version;
+			log(`Detected new dependency: ${dep} with version ${version}`);
+		} else {
+			const existingVersion = existingPackageJson.dependencies[dep];
+			const latestVersion = await getLatestVersion(dep);
+			if (existingVersion !== latestVersion) {
+				log(
+					`Version mismatch detected for ${dep}: existing ${existingVersion}, should be ${latestVersion}`,
+				);
+				existingPackageJson.dependencies[dep] = await assignVersion(dep);
+			}
 		}
 	}
 
-	return existingPackageJson;
-}
-
-// Function to prompt user for confirmation before making changes
-async function confirmChanges(newPackageJson, existingPackageJson) {
-	// Determine changes (show all dependencies, including existing ones)
-	const allDependencies = {
-		...existingPackageJson.dependencies,
-		...newPackageJson.dependencies,
-	};
-
-	if (isDryRun) {
-		console.log("--- Dry Run Summary ---");
-		console.log("Full dependencies listing:");
-		console.log(JSON.stringify(allDependencies, null, 2));
-		console.log("No changes have been made.");
-		process.exit(0);
+	// Identify dependencies to remove
+	const dependenciesToRemove = [];
+	for (const dep of Object.keys(existingPackageJson.dependencies)) {
+		if (!dependencies.has(dep)) {
+			log(`Dependency "${dep}" is not used in the project and will be removed.`);
+			dependenciesToRemove.push(dep);
+		}
 	}
 
-	console.log("✨ PackWizard™ Detected the following dependencies: ✨");
-	console.log(JSON.stringify(allDependencies, null, 2));
-	const proceed = await customConfirmPrompt(
-		"Do you want to apply these changes to package.json? (Y/n) ",
-	);
-
-	return proceed;
+	return { mergedPackageJson: existingPackageJson, dependenciesToRemove };
 }
 
-// Function to write the updated package.json
-async function writePackageJson(updatedPackageJson) {
+async function confirmChanges(
+	newPackageJson,
+	existingPackageJson,
+	dependenciesToRemove,
+	dryRun = false,
+) {
+	const currentDependencies = existingPackageJson.dependencies || {};
+	const detectedDependencies = newPackageJson.dependencies || {};
+
+	const dependenciesToAddOrUpdate = {};
+
+	// Identify dependencies to add or update
+	for (const [dep, version] of Object.entries(detectedDependencies)) {
+		if (!currentDependencies[dep]) {
+			dependenciesToAddOrUpdate[dep] = version;
+		} else if (currentDependencies[dep] !== version) {
+			dependenciesToAddOrUpdate[dep] = version;
+		}
+	}
+
+	// If changes are detected, display the table and JSON diff
+	if (Object.keys(dependenciesToAddOrUpdate).length > 0 || dependenciesToRemove.length > 0) {
+		console.log("\n🔥🔥🔥 *Prepare for Awesomeness!* 🔥🔥🔥");
+		console.log("✨ *Here's what your shiny new `package.json` will look like:* ✨\n");
+
+		// Display the before and after `package.json`
+		console.log("💻 *Before:*");
+		console.log(JSON.stringify(existingPackageJson, null, 2));
+		console.log("\n🚀 *After:*");
+		console.log(JSON.stringify(newPackageJson, null, 2));
+
+		// Show the delta
+		console.log("\n🔄 *Delta (Changes):*");
+		const deltaAdd = Object.keys(dependenciesToAddOrUpdate).map((dep) =>
+			currentDependencies[dep]
+				? `~ ${dep}: ${dependenciesToAddOrUpdate[dep]}`
+				: `+ ${dep}: ${dependenciesToAddOrUpdate[dep]}`,
+		);
+		const deltaRemove = dependenciesToRemove.map((dep) => `- ${dep}`);
+		console.log(deltaAdd.concat(deltaRemove).join("\n"));
+
+		if (dryRun) {
+			console.log("\n🔍 *This is just a dry run, so no changes will be made.*");
+			console.log("💡 *Run without `--dry-run` to make these magical changes for real!*");
+			return false;
+		}
+
+		// Prompt the user to confirm changes in a regular run
+		const proceed = await customConfirmPrompt("💥 Ready to make it happen? (Y/n) ");
+		return proceed ? { dependenciesToAddOrUpdate, dependenciesToRemove } : false;
+	}
+
+	// If no changes were detected
+	console.log("✨ Woohoo! Your `package.json` is already up to date! ✨");
+	return false;
+}
+
+async function writePackageJson(existingPackageJson, changes) {
+	const { dependenciesToAddOrUpdate, dependenciesToRemove } = changes;
+
+	const updatedPackageJson = { ...existingPackageJson };
+
+	// Remove unneeded dependencies
+	for (const dep of dependenciesToRemove) {
+		delete updatedPackageJson.dependencies[dep];
+	}
+
+	// Add or update dependencies
+	for (const [dep, version] of Object.entries(dependenciesToAddOrUpdate)) {
+		updatedPackageJson.dependencies[dep] = version;
+	}
+
 	try {
 		if (isDryRun) {
 			console.log("--- Dry Run Complete ---");
+			console.log("This is how your package.json would look:");
 			console.log(JSON.stringify(updatedPackageJson, null, 2));
 			return;
 		}
 
 		// Create a backup of the existing package.json
+		let backupCreated = false;
 		try {
 			await fs.copyFile(packageJsonPath, `${packageJsonPath}.backup`);
 			log(`Backup of existing package.json created at ${packageJsonPath}.backup`);
+			backupCreated = true;
 		} catch (backupError) {
 			if (backupError.code !== "ENOENT") {
 				console.error(`[PackWizard™] Error creating backup: ${backupError.message}`);
 				process.exit(1);
 			}
-			// If package.json doesn't exist, no backup is needed
 		}
 
 		// Write the updated package.json
 		await fs.writeFile(packageJsonPath, JSON.stringify(updatedPackageJson, null, 2), "utf-8");
 		console.log(`🎉 package.json has been successfully updated at ${packageJsonPath} 🎉`);
+
+		// Remove the backup if the file was successfully written
+		if (backupCreated) {
+			try {
+				await fs.unlink(`${packageJsonPath}.backup`);
+				log(`Backup removed at ${packageJsonPath}.backup`);
+			} catch (unlinkError) {
+				console.error(`[PackWizard™] Error removing backup: ${unlinkError.message}`);
+			}
+		}
 	} catch (error) {
 		console.error(`[PackWizard™] Error writing package.json: ${error.message}`);
 		process.exit(1);
 	}
 }
 
-// Function to prompt user for confirmation before making changes
 function customConfirmPrompt(question) {
 	return new Promise((resolve) => {
 		const rl = createInterface({
@@ -338,22 +392,49 @@ function customConfirmPrompt(question) {
 	});
 }
 
-// Main execution flow
+// Check for other necessary fields (like "scripts", "main", etc.)
+function checkForMissingFields(packageJson) {
+	if (!packageJson.scripts) {
+		log("Warning: 'scripts' field is missing in package.json.");
+		packageJson.scripts = {
+			test: 'echo "Error: no test specified" && exit 1',
+		};
+	}
+
+	if (!packageJson.main) {
+		log("Warning: 'main' field is missing in package.json.");
+		packageJson.main = "index.js";
+	}
+
+	// Add more checks as necessary for your project.
+}
+
 (async () => {
-	// Traverse directories and capture all dependencies
+	// Start the spinner before starting traversal
+	startSpinner();
+
 	await traverseDirectory(rootDir);
 
-	// After capturing, merge with existing package.json
 	const existingPackageJson = await readExistingPackageJson();
-	const updatedPackageJson = await mergeDependencies(existingPackageJson);
+	const { mergedPackageJson, dependenciesToRemove } = await mergeDependencies(
+		JSON.parse(JSON.stringify(existingPackageJson)),
+	);
 
-	// Confirm changes before writing
-	const proceed = await confirmChanges(updatedPackageJson, existingPackageJson);
+	checkForMissingFields(mergedPackageJson);
 
-	if (proceed) {
-		// Write the final package.json
-		await writePackageJson(updatedPackageJson);
-	} else {
-		console.log("🚫 Changes aborted by the user. No modifications were made.");
+	// Stop the spinner after traversal is complete
+	stopSpinner();
+
+	const changes = await confirmChanges(
+		mergedPackageJson,
+		existingPackageJson,
+		dependenciesToRemove,
+		isDryRun,
+	);
+
+	if (changes && !isDryRun) {
+		await writePackageJson(existingPackageJson, changes);
+	} else if (!changes && !isDryRun) {
+		console.log("🚫 No modifications were made. Your project is still awesome!");
 	}
 })();
