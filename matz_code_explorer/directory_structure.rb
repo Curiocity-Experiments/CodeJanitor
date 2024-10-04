@@ -3,16 +3,13 @@
 
 require 'set'
 require 'optparse'
-require 'colorize'
 
 # Ensure 'colorize' gem is installed
 begin
   require 'colorize'
 rescue LoadError
-  puts "Installing 'colorize' gem..."
-  system('gem install colorize')
-  Gem.clear_paths
-  require 'colorize'
+  puts "Error: 'colorize' gem is not installed. Please run `gem install colorize` to continue."
+  exit 1
 end
 
 def menu_info
@@ -30,19 +27,26 @@ if ARGV.include?('--info')
   exit
 end
 
-
-puts "Directory Structure Analysis: Provides an overview of the project's file organization.".cyan
-puts "This helps developers understand the project layout and locate important components.".cyan
-puts ""
+# Show usage if no options are provided
+if ARGV.empty?
+  puts "Usage: directory_structure.rb [options]"
+  puts "Use -h or --help for more information."
+  exit
+end
 
 # Default ignore patterns
 DEFAULT_IGNORE_PATTERNS = Set.new(['node_modules', '.git', 'vendor', 'tmp', 'log', 'public/packs', 'coverage', 'dist', 'build'])
 
-def parse_gitignore(dir)
+def parse_gitignore(dir, ignore_patterns)
   gitignore_file = File.join(dir, '.gitignore')
-  return [] unless File.exist?(gitignore_file)
+  return ignore_patterns unless File.exist?(gitignore_file)
 
-  File.readlines(gitignore_file).map(&:strip).reject { |line| line.empty? || line.start_with?('#') }
+  File.readlines(gitignore_file).each do |line|
+    line.strip!
+    next if line.empty? || line.start_with?('#')
+    ignore_patterns.add(line)
+  end
+  ignore_patterns
 end
 
 options = {}
@@ -57,8 +61,17 @@ OptionParser.new do |opts|
     DEFAULT_IGNORE_PATTERNS.add(pattern)
   end
 
+  opts.on("--override-ignore=FILE", "Override default ignore patterns with those from FILE") do |file|
+    DEFAULT_IGNORE_PATTERNS.clear
+    File.readlines(file).each { |line| DEFAULT_IGNORE_PATTERNS.add(line.strip) unless line.start_with?('#') }
+  end
+
   opts.on("-nDEPTH", "--depth=DEPTH", Integer, "Maximum depth to traverse (default: 3)") do |depth|
     options[:depth] = depth
+  end
+
+  opts.on("-r", "--recent", "Highlight recently modified files and directories") do
+    options[:recent] = true
   end
 
   opts.on("-h", "--help", "Displays Help") do
@@ -75,20 +88,7 @@ unless Dir.exist?(target_dir)
   exit 1
 end
 
-# Function to parse .gitignore
-def parse_gitignore(dir, ignore_patterns)
-  gitignore = File.join(dir, '.gitignore')
-  if File.exist?(gitignore)
-    File.readlines(gitignore).each do |line|
-      line.strip!
-      next if line.empty? || line.start_with?('#')
-      ignore_patterns.add(line)
-    end
-  end
-  ignore_patterns
-end
-
-# Function to determine if a path should be ignored
+# Function to determine if a file should be ignored
 def ignored?(relative_path, ignore_patterns)
   ignore_patterns.any? do |pattern|
     File.fnmatch?(pattern, relative_path, File::FNM_PATHNAME | File::FNM_DOTMATCH)
@@ -96,45 +96,67 @@ def ignored?(relative_path, ignore_patterns)
 end
 
 # Function to traverse directories and build table data
-def traverse(dir, current_depth, max_depth, ignore_patterns, table, target_dir)
+def traverse(dir, current_depth, max_depth, ignore_patterns, summary, target_dir, total_files_dirs, recent_files)
   return if current_depth > max_depth
+
   entries = Dir.children(dir).sort
   entries.each do |entry|
     path = File.join(dir, entry)
-    relative_path = path.sub(/^#{Regexp.escape(target_dir)}/, '').sub(/^\//, '')
-    next if ignored?(relative_path, ignore_patterns)
-    table[current_depth] ||= []
+    relative_path = path.sub(/^#{Regexp.escape(target_dir)}\//, '')
+
     if File.directory?(path)
-      table[current_depth] << entry.colorize(:blue).bold + "/"
-      traverse(path, current_depth + 1, max_depth, ignore_patterns, table, target_dir) if current_depth < max_depth
+      total_files_dirs[:directories] += 1
+      summary[current_depth][:directories] << entry if summary[current_depth]
+      traverse(path, current_depth + 1, max_depth, ignore_patterns, summary, target_dir, total_files_dirs, recent_files) if current_depth < max_depth
+    elsif File.file?(path)
+      next if ignored?(relative_path, ignore_patterns)
+      total_files_dirs[:files] += 1
+      recent_files << relative_path if File.mtime(path) > (Time.now - 7 * 24 * 60 * 60)
+      summary[current_depth][:files] << entry if summary[current_depth]
     end
   end
 end
 
-total_files = Dir.glob(File.join(target_dir, '**', '*')).select { |f| File.file?(f) }.count
-total_directories = Dir.glob(File.join(target_dir, '**', '*')).select { |f| File.directory?(f) }.count
-
-puts "\nProject Overview:".cyan
-puts "Total Files: #{total_files}".green
-puts "Total Directories: #{total_directories}".green
-puts "-" * 50 + "\n\n"
+# Initialize summary data structure
+total_files_dirs = { files: 0, directories: 0 }
+recent_files = []
+summary = Hash.new { |hash, key| hash[key] = { directories: [], files: [] } }
 
 # Parse .gitignore and add to ignore patterns
 ignore_patterns = parse_gitignore(target_dir, DEFAULT_IGNORE_PATTERNS.dup)
 
-# Initialize table data structure
-table = {}
-traverse(target_dir, 0, max_depth, ignore_patterns, table, target_dir)
+# Traverse and collect data
+traverse(target_dir, 0, max_depth, ignore_patterns, summary, target_dir, total_files_dirs, recent_files)
 
-# Print as table
-puts "\n===Directory Structure for #{target_dir}===".cyan.bold
-puts "-" * 50
-max_width = table.values.flatten.map(&:length).max
-(0..max_depth).each do |level|
-  next unless table[level]
-  indent = "  " * level
-  table[level].each do |entry|
-    puts "#{indent}#{entry.ljust(max_width)}"
+# Print overview
+puts "\n#{'=' * 60}".cyan
+puts "Project Overview".cyan.bold.center(60)
+puts "#{'=' * 60}".cyan
+puts "Total Files: #{total_files_dirs[:files]}".green
+puts "Total Directories: #{total_files_dirs[:directories]}".green
+puts "#{'-' * 60}".cyan
+
+# Print recently modified files if requested
+if options[:recent]
+  puts "\nRecently Modified Files (Last 7 Days):".magenta.bold
+  recent_files.take(10).each do |file|
+    puts "  #{file}".magenta
   end
+  puts "(Showing first 10 of #{recent_files.size} recent files)" if recent_files.size > 10
+  puts "#{'-' * 60}".cyan
 end
-puts "-" * 50 + "\n\n"
+
+# Print directory structure summary
+puts "\n=== Directory Summary for #{target_dir} ===".cyan.bold
+puts "#{'-' * 60}".cyan
+summary.each do |level, data|
+  indent = "  " * level
+  data[:directories].each do |directory|
+    puts "#{indent}#{directory.colorize(:blue).bold}/"
+  end
+  data[:files].take(5).each do |file|
+    puts "#{indent}#{file.colorize(:light_yellow)}"
+  end
+  puts "#{indent}... (#{data[:files].size - 5} more files)" if data[:files].size > 5
+end
+puts "#{'-' * 60}".cyan + "\n\n"

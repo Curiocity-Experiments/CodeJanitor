@@ -5,6 +5,10 @@ require 'optparse'
 require 'colorize'
 require 'tty-prompt'
 require 'json'
+require 'logger'
+require 'pathname'
+require 'pty'
+require 'parallel'
 
 puts "=== Matz's Joyful Code Explorer ===".yellow.bold
 puts "Let's embark on a delightful journey through your Ruby project!".cyan
@@ -41,11 +45,19 @@ end.parse!
 # Get the target directory from the arguments
 target_dir = ARGV.pop
 
-# Validate the target directory
-unless target_dir && Dir.exist?(target_dir)
-  puts "Oops! We need a valid path to explore. Let's try again!".red
+# Show help if no arguments are passed
+def show_help
   puts "Usage: #{$0} [options] <path_to_analyze>".yellow
-  exit 1
+  exit
+end
+
+show_help unless target_dir
+
+# Validate the target directory
+target_dir_path = Pathname.new(target_dir)
+unless target_dir_path.directory?
+  puts "Oops! We need a valid path to explore. Let's try again!".red
+  show_help
 end
 
 # Determine the directory where the main script resides
@@ -55,18 +67,17 @@ script_dir = File.dirname(__FILE__)
 log_file = nil
 
 # Setup logging if enabled
+logger_output = options[:log_enabled] ? File.join(File.dirname(__FILE__), "joyful_analysis_#{Time.now.strftime('%Y%m%d_%H%M%S')}.log") : $stdout
+logger = Logger.new(logger_output)
+logger.level = options[:verbose] ? Logger::DEBUG : Logger::INFO
+
 if options[:log_enabled]
-  timestamp = Time.now.strftime("%Y%m%d_%H%M%S")
-  log_file = File.join(script_dir, "joyful_analysis_#{timestamp}.log")
-  File.open(log_file, 'w') do |file|
-    file.puts "=== Matz's Joyful Code Explorer Log ===".yellow.bold
-    file.puts "Date: #{Time.now}"
-    file.puts "Target Directory: #{target_dir}"
-    file.puts "Ignore Patterns: #{options[:ignore_patterns].join(', ')}"
-    file.puts "-" * 40
-  end
-  $stdout.reopen(log_file, "a")
-  $stderr.reopen(log_file, "a")
+  log_file = logger_output
+  logger.info "=== Matz's Joyful Code Explorer Log ==="
+  logger.info "Date: #{Time.now}"
+  logger.info "Target Directory: #{target_dir}"
+  logger.info "Ignore Patterns: #{options[:ignore_patterns].join(', ')}"
+  logger.info "-" * 40
   puts "Log File (for posterity!): #{log_file}".green
 end
 
@@ -74,7 +85,18 @@ end
 def run_script(script_name, target_dir, ignore_patterns)
   ignore_options = ignore_patterns.map { |p| "-i '#{p}'" }.join(' ')
   command = "ruby #{script_name} -d '#{target_dir}' #{ignore_options}"
-  system(command)
+
+  begin
+    PTY.spawn(command) do |stdout, stdin, pid|
+      begin
+        stdout.each { |line| puts line }
+      rescue Errno::EIO
+        # End of output
+      end
+    end
+  rescue PTY::ChildExited
+    puts "The child process exited!"
+  end
 end
 
 # List of scripts to include in the explorer
@@ -92,10 +114,9 @@ scripts = [
 begin
   require 'tty-prompt'
 rescue LoadError
-  puts "Installing tty-prompt gem for a more interactive experience...".yellow
-  system('gem install tty-prompt')
-  Gem.clear_paths
-  require 'tty-prompt'
+  puts "The 'tty-prompt' gem is required for a more interactive experience.".yellow
+  puts "Please install it by running: gem install tty-prompt"
+  exit 1
 end
 
 puts "Target Directory: #{target_dir}".cyan
@@ -108,32 +129,47 @@ prompt = TTY::Prompt.new
 def fetch_menu_info(script_path)
   info = {}
   # Execute the script with '--info' and capture output
-  output = `ruby "#{script_path}" --info 2>/dev/null`
-  lines = output.strip.split("\n")
-  if lines.size >= 2
-    info[:title] = lines[0]
-    info[:description] = lines[1]
-  else
+  begin
+    PTY.spawn("ruby #{script_path} --info") do |stdout, stdin, pid|
+      lines = []
+      begin
+        stdout.each { |line| lines << line.strip }
+      rescue Errno::EIO
+        # End of output
+      end
+      if lines.size >= 2
+        info[:title] = lines[0]
+        info[:description] = lines[1]
+      else
+        info[:title] = File.basename(script_path, '.rb')
+        info[:description] = "No description available."
+      end
+    end
+  rescue PTY::ChildExited
     info[:title] = File.basename(script_path, '.rb')
-    info[:description] = "No description available."
+    info[:description] = "Failed to fetch information."
   end
   info
 end
 
-# Build script choices with titles and descriptions
-script_choices = []
-
-# Add each script with its title and description
-scripts.each do |script|
-  script_path = File.join(script_dir, script)
-  if File.exist?(script_path)
-    info = fetch_menu_info(script_path)
-    # Assign name and description separately
-    script_choices << { name: info[:title], value: script, desc: info[:description] }
-  else
-    script_choices << { name: "#{File.basename(script, '.rb')} (Missing)", value: script, disabled: true }
+# Function to build script choices
+def build_script_choices(scripts, script_dir)
+  script_choices = []
+  scripts.each do |script|
+    script_path = File.join(script_dir, script)
+    if File.exist?(script_path)
+      info = fetch_menu_info(script_path)
+      # Assign name and description separately
+      script_choices << { name: info[:title], value: script, desc: info[:description] }
+    else
+      script_choices << { name: "#{File.basename(script, '.rb')} (Missing)", value: script, disabled: true }
+    end
   end
+  script_choices
 end
+
+# Build script choices with titles and descriptions
+script_choices = build_script_choices(scripts, script_dir)
 
 # Add "Run All Scripts" option at the top
 script_choices.unshift({ name: "Run All Scripts", value: :run_all })
@@ -171,16 +207,6 @@ end
 selected.delete(:run_all)
 selected.delete(:cancel)
 
-# Function to get the project's Ruby version
-def get_project_ruby_version(target_dir)
-  ruby_version_file = File.join(target_dir, '.ruby-version')
-  if File.exist?(ruby_version_file)
-    File.read(ruby_version_file).strip
-  else
-    `ruby -v`.split[1]
-  end
-end
-
 # Exit gracefully if no scripts are selected
 if selected.empty?
   puts "\nNo scripts selected. Exiting gracefully. Maybe next time!".yellow
@@ -189,16 +215,11 @@ end
 
 puts "\n=== Let the joyful exploration begin! ===".yellow.bold
 
-# Execute each selected script
-selected.each do |script|
+# Execute each selected script in parallel
+Parallel.each(selected, in_threads: [selected.size, 4].min) do |script|
   script_path = File.join(script_dir, script)
   if File.exist?(script_path)
-    if run_script(script_path, target_dir, options[:ignore_patterns])
-      puts "✅ #{File.basename(script, '.rb')} ran successfully.".green
-      puts " "
-    else
-      puts "💔 #{File.basename(script, '.rb')} stumbled a bit. Let's show it some love later!".red
-    end
+    run_script(script_path, target_dir, options[:ignore_patterns])
   else
     puts "🕵️ Hmm, we couldn't find #{File.basename(script, '.rb')}. The mystery deepens!".red
   end
@@ -220,19 +241,9 @@ end
 # Compile the summary
 summary = get_analysis_summary(scripts, script_dir)
 
-# Function to get the project's Ruby version
-def get_project_ruby_version(target_dir)
-  ruby_version_file = File.join(target_dir, '.ruby-version')
-  if File.exist?(ruby_version_file)
-    File.read(ruby_version_file).strip
-  else
-    `ruby -v`.split[1]
-  end
-end
-
 # Display the summary
 puts "\n=== Joyful Repository Analysis Summary ===".yellow.bold
-puts "Project Ruby Version: #{get_project_ruby_version(target_dir)}".cyan
+puts "Project Ruby Version: #{RUBY_VERSION}".cyan
 puts "Total scripts in our toolbox: #{summary[:total_scripts]}".cyan
 puts "Scripts we ran: #{summary[:scripts_ran]}".green
 puts "Scripts that need a hug: #{summary[:scripts_missing]}".red
